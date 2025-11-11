@@ -13,6 +13,7 @@ implementation does not exist yet.
 
 import pytest
 import tiktoken
+from unittest.mock import Mock
 from leann.embedding_compute import (
     EMBEDDING_MODEL_LIMITS,
     get_model_token_limit,
@@ -266,3 +267,291 @@ class TestTokenTruncation:
         assert result_tokens <= target_tokens, (
             f"Should be ≤{target_tokens} tokens, got {result_tokens}"
         )
+
+
+class TestLMStudioHybridDiscovery:
+    """Tests for LM Studio integration in get_model_token_limit() hybrid discovery.
+
+    These tests verify that get_model_token_limit() properly integrates with
+    the LM Studio SDK bridge for dynamic token limit discovery. The integration
+    should:
+
+    1. Detect LM Studio URLs (port 1234 or 'lmstudio'/'lm.studio' in URL)
+    2. Convert HTTP URLs to WebSocket format for SDK queries
+    3. Query LM Studio SDK and use discovered limit
+    4. Fall back to registry when SDK returns None
+    5. Execute AFTER Ollama detection but BEFORE registry fallback
+
+    All tests are written in Red Phase - they should FAIL initially because the
+    LM Studio detection and integration logic does not exist yet in get_model_token_limit().
+    """
+
+    def test_get_model_token_limit_lmstudio_success(self, monkeypatch):
+        """Verify LM Studio SDK query succeeds and returns detected limit.
+
+        When a LM Studio base_url is detected and the SDK query succeeds,
+        get_model_token_limit() should return the dynamically discovered
+        context length without falling back to the registry.
+        """
+        # Mock _query_lmstudio_context_limit to return successful SDK query
+        def mock_query_lmstudio(model_name, base_url):
+            # Verify WebSocket URL was passed (not HTTP)
+            assert base_url.startswith("ws://"), (
+                f"Should convert HTTP to WebSocket format, got: {base_url}"
+            )
+            return 8192  # Successful SDK query
+
+        monkeypatch.setattr(
+            "leann.embedding_compute._query_lmstudio_context_limit",
+            mock_query_lmstudio,
+        )
+
+        # Test with HTTP URL that should be converted to WebSocket
+        limit = get_model_token_limit(
+            model_name="custom-model",
+            base_url="http://localhost:1234/v1"
+        )
+
+        assert limit == 8192, "Should return limit from LM Studio SDK query"
+
+    def test_get_model_token_limit_lmstudio_fallback_to_registry(self, monkeypatch):
+        """Verify fallback to registry when LM Studio SDK returns None.
+
+        When LM Studio SDK query fails (returns None), get_model_token_limit()
+        should fall back to the EMBEDDING_MODEL_LIMITS registry.
+        """
+        # Mock _query_lmstudio_context_limit to return None (SDK failure)
+        def mock_query_lmstudio(model_name, base_url):
+            return None  # SDK query failed
+
+        monkeypatch.setattr(
+            "leann.embedding_compute._query_lmstudio_context_limit",
+            mock_query_lmstudio,
+        )
+
+        # Test with known model that exists in registry
+        limit = get_model_token_limit(
+            model_name="nomic-embed-text",
+            base_url="http://localhost:1234/v1"
+        )
+
+        # Should fall back to registry value
+        assert limit == 2048, (
+            "Should fall back to registry when SDK returns None"
+        )
+
+    def test_get_model_token_limit_lmstudio_port_detection(self, monkeypatch):
+        """Verify detection of LM Studio via port 1234.
+
+        get_model_token_limit() should recognize port 1234 as a LM Studio
+        server and attempt SDK query, regardless of hostname.
+        """
+        query_called = False
+
+        def mock_query_lmstudio(model_name, base_url):
+            nonlocal query_called
+            query_called = True
+            return 4096
+
+        monkeypatch.setattr(
+            "leann.embedding_compute._query_lmstudio_context_limit",
+            mock_query_lmstudio,
+        )
+
+        # Test with port 1234 (default LM Studio port)
+        limit = get_model_token_limit(
+            model_name="test-model",
+            base_url="http://127.0.0.1:1234/v1"
+        )
+
+        assert query_called, "Should detect port 1234 and call LM Studio SDK query"
+        assert limit == 4096, "Should return SDK query result"
+
+    @pytest.mark.parametrize("test_url,expected_limit,keyword", [
+        ("http://lmstudio.local:8080/v1", 16384, "lmstudio"),
+        ("http://api.lm.studio:5000/v1", 32768, "lm.studio"),
+    ])
+    def test_get_model_token_limit_lmstudio_url_keyword_detection(
+        self, monkeypatch, test_url, expected_limit, keyword
+    ):
+        """Verify detection of LM Studio via keywords in URL.
+
+        get_model_token_limit() should recognize 'lmstudio' or 'lm.studio'
+        in the URL as indicating a LM Studio server.
+        """
+        query_called = False
+
+        def mock_query_lmstudio(model_name, base_url):
+            nonlocal query_called
+            query_called = True
+            return expected_limit
+
+        monkeypatch.setattr(
+            "leann.embedding_compute._query_lmstudio_context_limit",
+            mock_query_lmstudio,
+        )
+
+        limit = get_model_token_limit(
+            model_name="test-model",
+            base_url=test_url
+        )
+
+        assert query_called, f"Should detect '{keyword}' keyword and call SDK query"
+        assert limit == expected_limit, f"Should return SDK query result for {keyword}"
+
+    @pytest.mark.parametrize("input_url,expected_protocol,expected_host", [
+        ("http://localhost:1234/v1", "ws://", "localhost:1234"),
+        ("https://lmstudio.example.com:1234/v1", "wss://", "lmstudio.example.com:1234"),
+    ])
+    def test_get_model_token_limit_protocol_conversion(
+        self, monkeypatch, input_url, expected_protocol, expected_host
+    ):
+        """Verify HTTP/HTTPS URL is converted to WebSocket format for SDK query.
+
+        LM Studio SDK requires WebSocket URLs. get_model_token_limit() should:
+        1. Convert 'http://' to 'ws://'
+        2. Convert 'https://' to 'wss://'
+        3. Remove '/v1' or other path suffixes (SDK expects base URL)
+        4. Preserve host and port
+        """
+        conversions_tested = []
+
+        def mock_query_lmstudio(model_name, base_url):
+            conversions_tested.append(base_url)
+            return 8192
+
+        monkeypatch.setattr(
+            "leann.embedding_compute._query_lmstudio_context_limit",
+            mock_query_lmstudio,
+        )
+
+        get_model_token_limit(
+            model_name="test-model",
+            base_url=input_url
+        )
+
+        # Verify conversion happened
+        assert len(conversions_tested) == 1, "Should have called SDK query once"
+        assert conversions_tested[0].startswith(expected_protocol), (
+            f"Should convert to {expected_protocol}"
+        )
+        assert expected_host in conversions_tested[0], (
+            f"Should preserve host and port: {expected_host}"
+        )
+
+    def test_get_model_token_limit_lmstudio_executes_after_ollama(self, monkeypatch):
+        """Verify LM Studio detection happens AFTER Ollama detection.
+
+        The hybrid discovery order should be:
+        1. Ollama dynamic discovery (port 11434 or 'ollama' in URL)
+        2. LM Studio dynamic discovery (port 1234 or 'lmstudio' in URL)
+        3. Registry fallback
+
+        If both Ollama and LM Studio patterns match, Ollama should take precedence.
+        This test verifies that LM Studio is checked but doesn't interfere with Ollama.
+        """
+        ollama_called = False
+        lmstudio_called = False
+
+        def mock_query_ollama(model_name, base_url):
+            nonlocal ollama_called
+            ollama_called = True
+            return 2048  # Ollama query succeeds
+
+        def mock_query_lmstudio(model_name, base_url):
+            nonlocal lmstudio_called
+            lmstudio_called = True
+            return None  # Should not be reached if Ollama succeeds
+
+        monkeypatch.setattr(
+            "leann.embedding_compute._query_ollama_context_limit",
+            mock_query_ollama,
+        )
+        monkeypatch.setattr(
+            "leann.embedding_compute._query_lmstudio_context_limit",
+            mock_query_lmstudio,
+        )
+
+        # Test with Ollama URL
+        limit = get_model_token_limit(
+            model_name="test-model",
+            base_url="http://localhost:11434/api"
+        )
+
+        assert ollama_called, "Should attempt Ollama query first"
+        assert not lmstudio_called, (
+            "Should not attempt LM Studio query when Ollama succeeds"
+        )
+        assert limit == 2048, "Should return Ollama result"
+
+    def test_get_model_token_limit_lmstudio_not_detected_for_non_lmstudio_urls(self, monkeypatch):
+        """Verify LM Studio SDK query is NOT called for non-LM Studio URLs.
+
+        Only URLs with port 1234 or 'lmstudio'/'lm.studio' keywords should
+        trigger LM Studio SDK queries. Other URLs should skip to registry fallback.
+        """
+        lmstudio_called = False
+
+        def mock_query_lmstudio(model_name, base_url):
+            nonlocal lmstudio_called
+            lmstudio_called = True
+            return 8192
+
+        monkeypatch.setattr(
+            "leann.embedding_compute._query_lmstudio_context_limit",
+            mock_query_lmstudio,
+        )
+
+        # Test with non-LM Studio URLs
+        test_cases = [
+            "http://localhost:8080/v1",  # Different port
+            "http://openai.example.com/v1",  # Different service
+            "http://localhost:3000/v1",  # Another port
+        ]
+
+        for base_url in test_cases:
+            lmstudio_called = False  # Reset for each test
+            get_model_token_limit(
+                model_name="nomic-embed-text",
+                base_url=base_url
+            )
+            assert not lmstudio_called, (
+                f"Should NOT call LM Studio SDK for URL: {base_url}"
+            )
+
+    def test_get_model_token_limit_lmstudio_case_insensitive_detection(self, monkeypatch):
+        """Verify LM Studio detection is case-insensitive for keywords.
+
+        Keywords 'lmstudio' and 'lm.studio' should be detected regardless
+        of case (LMStudio, LMSTUDIO, LmStudio, etc.).
+        """
+        query_called = False
+
+        def mock_query_lmstudio(model_name, base_url):
+            nonlocal query_called
+            query_called = True
+            return 8192
+
+        monkeypatch.setattr(
+            "leann.embedding_compute._query_lmstudio_context_limit",
+            mock_query_lmstudio,
+        )
+
+        # Test various case variations
+        test_cases = [
+            "http://LMStudio.local:8080/v1",
+            "http://LMSTUDIO.example.com/v1",
+            "http://LmStudio.local/v1",
+            "http://api.LM.STUDIO:5000/v1",
+        ]
+
+        for base_url in test_cases:
+            query_called = False  # Reset for each test
+            limit = get_model_token_limit(
+                model_name="test-model",
+                base_url=base_url
+            )
+            assert query_called, f"Should detect LM Studio in URL: {base_url}"
+            assert limit == 8192, f"Should return SDK result for URL: {base_url}"
+
+

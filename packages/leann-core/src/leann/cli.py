@@ -145,6 +145,12 @@ Examples:
             help="API key for embedding service (defaults to OPENAI_API_KEY)",
         )
         build_parser.add_argument(
+            "--embedding-prompt-template",
+            type=str,
+            default=None,
+            help="Prompt template to prepend to all texts for embedding (e.g., 'query: ' for search)",
+        )
+        build_parser.add_argument(
             "--force", "-f", action="store_true", help="Force rebuild existing index"
         )
         build_parser.add_argument(
@@ -259,6 +265,12 @@ Examples:
             "--show-metadata",
             action="store_true",
             help="Display file paths and metadata in search results",
+        )
+        search_parser.add_argument(
+            "--embedding-prompt-template",
+            type=str,
+            default=None,
+            help="Prompt template to prepend to query for embedding (e.g., 'query: ' for search)",
         )
 
         # Ask command
@@ -1398,6 +1410,8 @@ Examples:
             resolved_embedding_key = resolve_openai_api_key(args.embedding_api_key)
             if resolved_embedding_key:
                 embedding_options["api_key"] = resolved_embedding_key
+        if args.embedding_prompt_template:
+            embedding_options["prompt_template"] = args.embedding_prompt_template
 
         builder = LeannBuilder(
             backend_name=args.backend_name,

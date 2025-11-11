@@ -4,8 +4,10 @@ Consolidates all embedding computation logic using SentenceTransformer
 Preserves all optimization parameters to ensure performance
 """
 
+import json
 import logging
 import os
+import subprocess
 import time
 from typing import Any, Optional
 
@@ -63,6 +65,18 @@ def get_model_token_limit(
         # Detect Ollama servers by port or "ollama" in URL
         if "11434" in base_url or "ollama" in base_url.lower():
             limit = _query_ollama_context_limit(model_name, base_url)
+            if limit:
+                return limit
+
+        # Try LM Studio SDK discovery
+        if "1234" in base_url or "lmstudio" in base_url.lower() or "lm.studio" in base_url.lower():
+            # Convert HTTP to WebSocket URL
+            ws_url = base_url.replace("https://", "wss://").replace("http://", "ws://")
+            # Remove /v1 suffix if present
+            if ws_url.endswith("/v1"):
+                ws_url = ws_url[:-3]
+
+            limit = _query_lmstudio_context_limit(model_name, ws_url)
             if limit:
                 return limit
 
@@ -185,6 +199,64 @@ def _query_ollama_context_limit(model_name: str, base_url: str) -> Optional[int]
     return None
 
 
+def _query_lmstudio_context_limit(model_name: str, base_url: str) -> Optional[int]:
+    """
+    Query LM Studio SDK for model context length via Node.js subprocess.
+
+    Args:
+        model_name: Name of the LM Studio model
+        base_url: Base URL of the LM Studio server (WebSocket format, e.g., "ws://localhost:1234")
+
+    Returns:
+        Context limit in tokens if found, None otherwise
+    """
+    # Inline JavaScript using @lmstudio/sdk
+    js_code = f"""
+    const {{ LMStudioClient }} = require('@lmstudio/sdk');
+    (async () => {{
+        try {{
+            const client = new LMStudioClient({{ baseUrl: '{base_url}' }});
+            const model = await client.llm.load('{model_name}', {{ contextLength: -1 }});
+            const contextLength = await model.getContextLength();
+            console.log(JSON.stringify({{ contextLength, identifier: '{model_name}' }}));
+        }} catch (error) {{
+            console.error(JSON.stringify({{ error: error.message }}));
+            process.exit(1);
+        }}
+    }})();
+    """
+
+    try:
+        result = subprocess.run(
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode != 0:
+            logger.debug(f"LM Studio SDK error: {result.stderr}")
+            return None
+
+        data = json.loads(result.stdout)
+        context_length = data.get("contextLength")
+
+        if context_length and context_length > 0:
+            logger.info(f"LM Studio SDK detected {model_name} context length: {context_length}")
+            return context_length
+
+    except FileNotFoundError:
+        logger.debug("Node.js not found - install Node.js for LM Studio SDK features")
+    except subprocess.TimeoutExpired:
+        logger.debug("LM Studio SDK query timeout")
+    except json.JSONDecodeError:
+        logger.debug("LM Studio SDK returned invalid JSON")
+    except Exception as e:
+        logger.debug(f"LM Studio SDK query failed: {e}")
+
+    return None
+
+
 # Global model cache to avoid repeated loading
 _model_cache: dict[str, Any] = {}
 
@@ -232,6 +304,7 @@ def compute_embeddings(
             model_name,
             base_url=provider_options.get("base_url"),
             api_key=provider_options.get("api_key"),
+            provider_options=provider_options,
         )
     elif mode == "mlx":
         return compute_embeddings_mlx(texts, model_name)
@@ -579,6 +652,7 @@ def compute_embeddings_openai(
     model_name: str,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    provider_options: Optional[dict[str, Any]] = None,
 ) -> np.ndarray:
     # TODO: @yichuan-w add progress bar only in build mode
     """Compute embeddings using OpenAI API"""
@@ -597,25 +671,36 @@ def compute_embeddings_openai(
             f"Found {invalid_count} empty/invalid text(s) in input. Upstream should filter before calling OpenAI."
         )
 
-    resolved_base_url = resolve_openai_base_url(base_url)
-    resolved_api_key = resolve_openai_api_key(api_key)
+    # Extract base_url and api_key from provider_options if not provided directly
+    provider_options = provider_options or {}
+    effective_base_url = base_url or provider_options.get("base_url")
+    effective_api_key = api_key or provider_options.get("api_key")
+
+    resolved_base_url = resolve_openai_base_url(effective_base_url)
+    resolved_api_key = resolve_openai_api_key(effective_api_key)
 
     if not resolved_api_key:
         raise RuntimeError("OPENAI_API_KEY environment variable not set")
 
-    # Cache OpenAI client
-    cache_key = f"openai_client::{resolved_base_url}"
-    if cache_key in _model_cache:
-        client = _model_cache[cache_key]
-    else:
-        client = openai.OpenAI(api_key=resolved_api_key, base_url=resolved_base_url)
-        _model_cache[cache_key] = client
-        logger.info("OpenAI client cached")
+    # Create OpenAI client
+    client = openai.OpenAI(api_key=resolved_api_key, base_url=resolved_base_url)
 
     logger.info(
         f"Computing embeddings for {len(texts)} texts using OpenAI API, model: '{model_name}'"
     )
     print(f"len of texts: {len(texts)}")
+
+    # Apply prompt template if provided
+    prompt_template = provider_options.get("prompt_template")
+
+    if prompt_template:
+        logger.warning(f"Applying prompt template: '{prompt_template}'")
+        texts = [f"{prompt_template}{text}" for text in texts]
+
+    # Query token limit and apply truncation
+    token_limit = get_model_token_limit(model_name, base_url=effective_base_url)
+    logger.info(f"Using token limit: {token_limit} for model '{model_name}'")
+    texts = truncate_to_token_limit(texts, token_limit)
 
     # OpenAI has limits on batch size and input length
     max_batch_size = 800  # Conservative batch size because the token limit is 300K
@@ -647,7 +732,15 @@ def compute_embeddings_openai(
         try:
             response = client.embeddings.create(model=model_name, input=batch_texts)
             batch_embeddings = [embedding.embedding for embedding in response.data]
-            all_embeddings.extend(batch_embeddings)
+
+            # Verify we got the expected number of embeddings
+            if len(batch_embeddings) != len(batch_texts):
+                logger.warning(
+                    f"Expected {len(batch_texts)} embeddings but got {len(batch_embeddings)}"
+                )
+
+            # Only take the number of embeddings that match the batch size
+            all_embeddings.extend(batch_embeddings[:len(batch_texts)])
         except Exception as e:
             logger.error(f"Batch {i} failed: {e}")
             raise
