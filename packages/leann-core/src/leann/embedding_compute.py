@@ -211,12 +211,13 @@ def _query_lmstudio_context_limit(model_name: str, base_url: str) -> Optional[in
         Context limit in tokens if found, None otherwise
     """
     # Inline JavaScript using @lmstudio/sdk
+    # Note: Use client.embedding.load() for embedding models
     js_code = f"""
     const {{ LMStudioClient }} = require('@lmstudio/sdk');
     (async () => {{
         try {{
             const client = new LMStudioClient({{ baseUrl: '{base_url}' }});
-            const model = await client.llm.load('{model_name}', {{ contextLength: -1 }});
+            const model = await client.embedding.load('{model_name}', {{ verbose: false }});
             const contextLength = await model.getContextLength();
             console.log(JSON.stringify({{ contextLength, identifier: '{model_name}' }}));
         }} catch (error) {{
@@ -227,11 +228,32 @@ def _query_lmstudio_context_limit(model_name: str, base_url: str) -> Optional[in
     """
 
     try:
+        # Set NODE_PATH to include global modules for @lmstudio/sdk resolution
+        env = os.environ.copy()
+
+        # Try to get npm global root (works with nvm, brew node, etc.)
+        try:
+            npm_root = subprocess.run(
+                ["npm", "root", "-g"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if npm_root.returncode == 0:
+                global_modules = npm_root.stdout.strip()
+                # Append to existing NODE_PATH if present
+                existing_node_path = env.get("NODE_PATH", "")
+                env["NODE_PATH"] = f"{global_modules}:{existing_node_path}" if existing_node_path else global_modules
+        except Exception:
+            # If npm not available, continue with existing NODE_PATH
+            pass
+
         result = subprocess.run(
             ["node", "-e", js_code],
             capture_output=True,
             text=True,
             timeout=10,
+            env=env,
         )
 
         if result.returncode != 0:

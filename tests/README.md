@@ -36,6 +36,14 @@ Tests DiskANN graph partitioning functionality:
 - Includes performance comparison between DiskANN (with partition) and HNSW
 - **Note**: These tests are skipped in CI due to hardware requirements and computation time
 
+### `test_prompt_template_e2e.py`
+Integration tests for prompt template feature with live embedding services:
+- Tests prompt template prepending with EmbeddingGemma (OpenAI-compatible API via LM Studio)
+- Tests hybrid token limit discovery (Ollama dynamic detection, registry fallback, default)
+- Tests LM Studio SDK bridge for automatic context length detection (requires Node.js + @lmstudio/sdk)
+- **Note**: These tests require live services (LM Studio, Ollama) and are marked with `@pytest.mark.integration`
+- **Important**: Prompt templates are ONLY for EmbeddingGemma and similar task-specific models, NOT regular embedding models
+
 ## Running Tests
 
 ### Install test dependencies:
@@ -65,6 +73,12 @@ pytest tests/ -m "not openai"
 
 # Skip slow tests
 pytest tests/ -m "not slow"
+
+# Skip integration tests (that require live services)
+pytest tests/ -m "not integration"
+
+# Run only integration tests (requires LM Studio or Ollama running)
+pytest tests/test_prompt_template_e2e.py -v -s
 
 # Run DiskANN partition tests (requires local machine, not CI)
 pytest tests/test_diskann_partition.py
@@ -101,6 +115,20 @@ The `pytest.ini` file configures:
 - Custom markers for slow and OpenAI tests
 - Verbose output with short tracebacks
 
+### Integration Test Prerequisites
+
+Integration tests (`test_prompt_template_e2e.py`) require live services:
+
+**Required:**
+- LM Studio running at `http://localhost:1234` with EmbeddingGemma model loaded
+
+**Optional:**
+- Ollama running at `http://localhost:11434` for token limit detection tests
+- Node.js + @lmstudio/sdk installed (`npm install -g @lmstudio/sdk`) for SDK bridge tests
+
+Tests gracefully skip if services are unavailable.
+
 ### Known Issues
 
 - OpenAI tests are automatically skipped if no API key is provided
+- Integration tests require live embedding services and may fail due to proxy settings (set `unset ALL_PROXY all_proxy` if needed)
