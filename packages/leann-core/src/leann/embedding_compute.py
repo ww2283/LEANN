@@ -336,6 +336,7 @@ def compute_embeddings(
             model_name,
             is_build=is_build,
             host=provider_options.get("host"),
+            provider_options=provider_options,
         )
     elif mode == "gemini":
         return compute_embeddings_gemini(texts, model_name, is_build=is_build)
@@ -852,6 +853,7 @@ def compute_embeddings_ollama(
     model_name: str,
     is_build: bool = False,
     host: Optional[str] = None,
+    provider_options: Optional[dict[str, Any]] = None,
 ) -> np.ndarray:
     """
     Compute embeddings using Ollama API with true batch processing.
@@ -864,6 +866,7 @@ def compute_embeddings_ollama(
         model_name: Ollama model name (e.g., "nomic-embed-text", "mxbai-embed-large")
         is_build: Whether this is a build operation (shows progress bar)
         host: Ollama host URL (defaults to environment or http://localhost:11434)
+        provider_options: Optional provider-specific options (e.g., prompt_template)
 
     Returns:
         Normalized embeddings array, shape: (len(texts), embedding_dim)
@@ -999,6 +1002,14 @@ def compute_embeddings_ollama(
         batch_size = 32
 
     logger.info(f"Using batch size: {batch_size} for true batch processing")
+
+    # Apply prompt template if provided
+    provider_options = provider_options or {}
+    prompt_template = provider_options.get("prompt_template")
+
+    if prompt_template:
+        logger.warning(f"Applying prompt template: '{prompt_template}'")
+        texts = [f"{prompt_template}{text}" for text in texts]
 
     # Get model token limit and apply truncation before batching
     token_limit = get_model_token_limit(model_name, base_url=resolved_host)

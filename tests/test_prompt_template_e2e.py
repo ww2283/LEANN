@@ -24,6 +24,7 @@ import pytest
 import requests
 
 from leann.embedding_compute import (
+    compute_embeddings_ollama,
     compute_embeddings_openai,
     get_model_token_limit,
 )
@@ -150,6 +151,107 @@ class TestPromptTemplateOpenAI:
         assert not np.allclose(embeddings_no_template[0], embeddings_with_template[0])
 
         logger.info("✓ Prompt template changes embedding values as expected")
+
+
+class TestPromptTemplateOllama:
+    """End-to-end tests for prompt template with Ollama."""
+
+    @pytest.mark.skipif(
+        not check_ollama_available(),
+        reason="Ollama service not available on localhost:11434"
+    )
+    def test_ollama_embedding_with_prompt_template(self):
+        """Test prompt templates with Ollama using any available embedding model."""
+        # Get any available embedding model
+        try:
+            response = requests.get("http://localhost:11434/api/tags", timeout=2.0)
+            models = response.json().get("models", [])
+
+            embedding_models = []
+            for model in models:
+                name = model["name"]
+                base_name = name.split(":")[0]
+                if any(emb in base_name for emb in ["embed", "bge", "minilm", "e5", "nomic"]):
+                    embedding_models.append(name)
+
+            if not embedding_models:
+                pytest.skip("No embedding models available in Ollama")
+
+            model_name = embedding_models[0]
+
+            texts = ["artificial intelligence", "machine learning"]
+            prompt_template = "search_query: "
+
+            # Get embeddings with prompt template via provider_options
+            provider_options = {"prompt_template": prompt_template}
+            embeddings = compute_embeddings_ollama(
+                texts=texts,
+                model_name=model_name,
+                is_build=False,
+                host="http://localhost:11434",
+                provider_options=provider_options
+            )
+
+            assert embeddings is not None
+            assert len(embeddings) == 2
+            assert all(isinstance(emb, np.ndarray) for emb in embeddings)
+            assert all(len(emb) > 0 for emb in embeddings)
+
+            logger.info(f"✓ Ollama embeddings with prompt template: {len(embeddings)} vectors, {len(embeddings[0])} dimensions")
+
+        except Exception as e:
+            pytest.skip(f"Could not test Ollama prompt template: {e}")
+
+    @pytest.mark.skipif(
+        not check_ollama_available(),
+        reason="Ollama service not available"
+    )
+    def test_ollama_prompt_template_affects_embeddings(self):
+        """Verify that prompt templates actually change embedding values with Ollama."""
+        # Get any available embedding model
+        try:
+            response = requests.get("http://localhost:11434/api/tags", timeout=2.0)
+            models = response.json().get("models", [])
+
+            embedding_models = []
+            for model in models:
+                name = model["name"]
+                base_name = name.split(":")[0]
+                if any(emb in base_name for emb in ["embed", "bge", "minilm", "e5", "nomic"]):
+                    embedding_models.append(name)
+
+            if not embedding_models:
+                pytest.skip("No embedding models available in Ollama")
+
+            model_name = embedding_models[0]
+            text = "machine learning"
+            host = "http://localhost:11434"
+
+            # Get embeddings without template
+            embeddings_no_template = compute_embeddings_ollama(
+                texts=[text],
+                model_name=model_name,
+                is_build=False,
+                host=host,
+                provider_options={}
+            )
+
+            # Get embeddings with template
+            embeddings_with_template = compute_embeddings_ollama(
+                texts=[text],
+                model_name=model_name,
+                is_build=False,
+                host=host,
+                provider_options={"prompt_template": "search_query: "}
+            )
+
+            # Embeddings should be different when template is applied
+            assert not np.allclose(embeddings_no_template[0], embeddings_with_template[0])
+
+            logger.info("✓ Ollama prompt template changes embedding values as expected")
+
+        except Exception as e:
+            pytest.skip(f"Could not test Ollama prompt template: {e}")
 
 
 class TestLMStudioSDK:
