@@ -158,6 +158,95 @@ builder.build_index("./indexes/my-notes", chunks)
 
 `embedding_options` is persisted to the index `meta.json`, so subsequent `LeannSearcher` or `LeannChat` sessions automatically reuse the same provider settings (the embedding server manager forwards them to the provider for you).
 
+## Optional Embedding Features
+
+### Task-Specific Prompt Templates
+
+Some embedding models are trained with task-specific prompts to differentiate between documents and queries. The most notable example is **Google's EmbeddingGemma**, which requires different prompts depending on the use case:
+
+- **Indexing documents**: `"title: none | text: "`
+- **Search queries**: `"task: search result | query: "`
+
+LEANN supports automatic prompt prepending via the `--embedding-prompt-template` flag:
+
+```bash
+# Build index with EmbeddingGemma (via LM Studio or Ollama)
+leann build my-docs \
+  --docs ./documents \
+  --embedding-mode openai \
+  --embedding-model text-embedding-embeddinggemma-300m-qat \
+  --embedding-api-base http://localhost:1234/v1 \
+  --embedding-prompt-template "title: none | text: " \
+  --force
+
+# Search with query-specific prompt
+leann search my-docs \
+  --query "What is quantum computing?" \
+  --embedding-prompt-template "task: search result | query: "
+```
+
+**Important Notes:**
+- **Only use with compatible models**: EmbeddingGemma and similar task-specific models
+- **NOT for regular models**: Adding prompts to models like `nomic-embed-text`, `text-embedding-3-small`, or `bge-base-en-v1.5` will corrupt embeddings
+- **Template is saved**: Build-time templates are saved to `.meta.json` for reference
+- **Flexible prompts**: You can use any prompt string, or leave it empty (`""`)
+
+**Python API:**
+```python
+from leann.api import LeannBuilder
+
+builder = LeannBuilder(
+    embedding_mode="openai",
+    embedding_model="text-embedding-embeddinggemma-300m-qat",
+    embedding_options={
+        "base_url": "http://localhost:1234/v1",
+        "api_key": "lm-studio",
+        "prompt_template": "title: none | text: ",
+    },
+)
+builder.build_index("./indexes/my-docs", chunks)
+```
+
+**References:**
+- [HuggingFace Blog: EmbeddingGemma](https://huggingface.co/blog/embeddinggemma) - Technical details
+
+### LM Studio Auto-Detection (Optional)
+
+When using LM Studio with the OpenAI-compatible API, LEANN can optionally auto-detect model context lengths via the LM Studio SDK. This eliminates manual configuration for token limits.
+
+**Prerequisites:**
+```bash
+# Install Node.js (if not already installed)
+# Then install the LM Studio SDK globally
+npm install -g @lmstudio/sdk
+```
+
+**How it works:**
+1. LEANN detects LM Studio URLs (`:1234`, `lmstudio` in URL)
+2. Queries model metadata via Node.js subprocess
+3. Automatically unloads model after query (respects your JIT auto-evict settings)
+4. Falls back to static registry if SDK unavailable
+
+**No configuration needed** - it works automatically when SDK is installed:
+
+```bash
+leann build my-docs \
+  --docs ./documents \
+  --embedding-mode openai \
+  --embedding-model text-embedding-nomic-embed-text-v1.5 \
+  --embedding-api-base http://localhost:1234/v1
+  # Context length auto-detected if SDK available
+  # Falls back to registry (2048) if not
+```
+
+**Benefits:**
+- ✅ Automatic token limit detection
+- ✅ Respects LM Studio JIT auto-evict settings
+- ✅ No manual registry maintenance
+- ✅ Graceful fallback if SDK unavailable
+
+**Note:** This is completely optional. LEANN works perfectly fine without the SDK using the built-in token limit registry.
+
 ## Index Selection: Matching Your Scale
 
 ### HNSW (Hierarchical Navigable Small World)
