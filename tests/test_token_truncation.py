@@ -555,3 +555,107 @@ class TestLMStudioHybridDiscovery:
             assert limit == 8192, f"Should return SDK result for URL: {base_url}"
 
 
+class TestTokenLimitCaching:
+    """Tests for token limit caching to prevent repeated SDK/API calls.
+
+    Caching prevents duplicate SDK/API calls within the same Python process,
+    which is important because:
+    1. LM Studio SDK load() can load duplicate model instances
+    2. Ollama /api/show queries add latency
+    3. Registry lookups are pure overhead
+
+    Cache is process-scoped and resets between leann build invocations.
+    """
+
+    def setup_method(self):
+        """Clear cache before each test."""
+        from leann.embedding_compute import _token_limit_cache
+        _token_limit_cache.clear()
+
+    def test_registry_lookup_is_cached(self):
+        """Verify that registry lookups are cached."""
+        from leann.embedding_compute import _token_limit_cache
+
+        # First call
+        limit1 = get_model_token_limit("text-embedding-3-small")
+        assert limit1 == 8192
+
+        # Verify it's in cache
+        cache_key = ("text-embedding-3-small", "")
+        assert cache_key in _token_limit_cache
+        assert _token_limit_cache[cache_key] == 8192
+
+        # Second call should use cache
+        limit2 = get_model_token_limit("text-embedding-3-small")
+        assert limit2 == 8192
+
+    def test_default_fallback_is_cached(self):
+        """Verify that default fallbacks are cached."""
+        from leann.embedding_compute import _token_limit_cache
+
+        # First call with unknown model
+        limit1 = get_model_token_limit("unknown-model-xyz", default=512)
+        assert limit1 == 512
+
+        # Verify it's in cache
+        cache_key = ("unknown-model-xyz", "")
+        assert cache_key in _token_limit_cache
+        assert _token_limit_cache[cache_key] == 512
+
+        # Second call should use cache
+        limit2 = get_model_token_limit("unknown-model-xyz", default=512)
+        assert limit2 == 512
+
+    def test_different_urls_create_separate_cache_entries(self):
+        """Verify that different base_urls create separate cache entries."""
+        from leann.embedding_compute import _token_limit_cache
+
+        # Same model, different URLs
+        limit1 = get_model_token_limit("nomic-embed-text", base_url="http://localhost:11434")
+        limit2 = get_model_token_limit("nomic-embed-text", base_url="http://localhost:1234/v1")
+
+        # Both should find the model in registry (2048)
+        assert limit1 == 2048
+        assert limit2 == 2048
+
+        # But they should be separate cache entries
+        cache_key1 = ("nomic-embed-text", "http://localhost:11434")
+        cache_key2 = ("nomic-embed-text", "http://localhost:1234/v1")
+
+        assert cache_key1 in _token_limit_cache
+        assert cache_key2 in _token_limit_cache
+        assert len(_token_limit_cache) == 2
+
+    def test_cache_prevents_repeated_lookups(self):
+        """Verify that cache prevents repeated registry/API lookups."""
+        from leann.embedding_compute import _token_limit_cache
+
+        model_name = "text-embedding-ada-002"
+
+        # First call - should add to cache
+        assert len(_token_limit_cache) == 0
+        limit1 = get_model_token_limit(model_name)
+
+        cache_size_after_first = len(_token_limit_cache)
+        assert cache_size_after_first == 1
+
+        # Multiple subsequent calls - cache size should not change
+        for _ in range(5):
+            limit = get_model_token_limit(model_name)
+            assert limit == limit1
+            assert len(_token_limit_cache) == cache_size_after_first
+
+    def test_versioned_model_names_cached_correctly(self):
+        """Verify that versioned model names (e.g., model:tag) are cached."""
+        from leann.embedding_compute import _token_limit_cache
+
+        # Model with version tag
+        limit = get_model_token_limit("nomic-embed-text:latest", base_url="http://localhost:11434")
+        assert limit == 2048
+
+        # Should be cached with full name including version
+        cache_key = ("nomic-embed-text:latest", "http://localhost:11434")
+        assert cache_key in _token_limit_cache
+        assert _token_limit_cache[cache_key] == 2048
+
+

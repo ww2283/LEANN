@@ -42,6 +42,11 @@ EMBEDDING_MODEL_LIMITS = {
     "text-embedding-ada-002": 8192,
 }
 
+# Runtime cache for dynamically discovered token limits
+# Key: (model_name, base_url), Value: token_limit
+# Prevents repeated SDK/API calls for the same model
+_token_limit_cache: dict[tuple[str, str], int] = {}
+
 
 def get_model_token_limit(
     model_name: str,
@@ -51,6 +56,7 @@ def get_model_token_limit(
     """
     Get token limit for a given embedding model.
     Uses hybrid approach: dynamic discovery for Ollama, registry fallback for others.
+    Caches discovered limits to prevent repeated API/SDK calls.
 
     Args:
         model_name: Name of the embedding model
@@ -60,12 +66,20 @@ def get_model_token_limit(
     Returns:
         Token limit for the model in tokens
     """
+    # Check cache first to avoid repeated SDK/API calls
+    cache_key = (model_name, base_url or "")
+    if cache_key in _token_limit_cache:
+        cached_limit = _token_limit_cache[cache_key]
+        logger.debug(f"Using cached token limit for {model_name}: {cached_limit}")
+        return cached_limit
+
     # Try Ollama dynamic discovery if base_url provided
     if base_url:
         # Detect Ollama servers by port or "ollama" in URL
         if "11434" in base_url or "ollama" in base_url.lower():
             limit = _query_ollama_context_limit(model_name, base_url)
             if limit:
+                _token_limit_cache[cache_key] = limit
                 return limit
 
         # Try LM Studio SDK discovery
@@ -78,6 +92,7 @@ def get_model_token_limit(
 
             limit = _query_lmstudio_context_limit(model_name, ws_url)
             if limit:
+                _token_limit_cache[cache_key] = limit
                 return limit
 
     # Fallback to known model registry with version handling (from PR #154)
@@ -86,19 +101,25 @@ def get_model_token_limit(
 
     # Check exact match first
     if model_name in EMBEDDING_MODEL_LIMITS:
-        return EMBEDDING_MODEL_LIMITS[model_name]
+        limit = EMBEDDING_MODEL_LIMITS[model_name]
+        _token_limit_cache[cache_key] = limit
+        return limit
 
     # Check base name match
     if base_model_name in EMBEDDING_MODEL_LIMITS:
-        return EMBEDDING_MODEL_LIMITS[base_model_name]
+        limit = EMBEDDING_MODEL_LIMITS[base_model_name]
+        _token_limit_cache[cache_key] = limit
+        return limit
 
     # Check partial matches for common patterns
-    for known_model, limit in EMBEDDING_MODEL_LIMITS.items():
+    for known_model, registry_limit in EMBEDDING_MODEL_LIMITS.items():
         if known_model in base_model_name or base_model_name in known_model:
-            return limit
+            _token_limit_cache[cache_key] = registry_limit
+            return registry_limit
 
     # Default fallback
     logger.warning(f"Unknown model '{model_name}', using default {default} token limit")
+    _token_limit_cache[cache_key] = default
     return default
 
 
@@ -211,7 +232,7 @@ def _query_lmstudio_context_limit(model_name: str, base_url: str) -> Optional[in
         Context limit in tokens if found, None otherwise
     """
     # Inline JavaScript using @lmstudio/sdk
-    # Note: Use client.embedding.load() for embedding models
+    # Note: Load model temporarily for metadata, then unload to respect JIT auto-evict
     js_code = f"""
     const {{ LMStudioClient }} = require('@lmstudio/sdk');
     (async () => {{
@@ -219,6 +240,7 @@ def _query_lmstudio_context_limit(model_name: str, base_url: str) -> Optional[in
             const client = new LMStudioClient({{ baseUrl: '{base_url}' }});
             const model = await client.embedding.load('{model_name}', {{ verbose: false }});
             const contextLength = await model.getContextLength();
+            await model.unload();  // Unload immediately to respect JIT auto-evict settings
             console.log(JSON.stringify({{ contextLength, identifier: '{model_name}' }}));
         }} catch (error) {{
             console.error(JSON.stringify({{ error: error.message }}));
