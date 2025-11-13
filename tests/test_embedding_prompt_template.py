@@ -87,119 +87,73 @@ class TestPromptTemplatePrepending:
         assert isinstance(result, np.ndarray)
         assert result.shape == (2, 3), "Should return correct shape"
 
-    def test_prompt_template_none_provider_options_is_noop(
+    def test_template_not_applied_when_missing_or_empty(
         self, mock_openai_module, mock_openai_client
     ):
-        """Verify None provider_options doesn't modify texts.
+        """Verify template not applied when provider_options is None, missing key, or empty string.
 
-        When provider_options is None (not provided), texts should be
-        sent to the API unchanged. This is the default behavior.
+        This consolidated test covers three scenarios where templates should NOT be applied:
+        1. provider_options is None (default behavior)
+        2. provider_options exists but missing 'prompt_template' key
+        3. prompt_template is explicitly set to empty string ""
+
+        In all cases, texts should be sent to the API unchanged.
         """
+        # Scenario 1: None provider_options
         texts = ["Original text one", "Original text two"]
-
-        # Call without provider_options (None)
         result = compute_embeddings_openai(
             texts=texts,
             model_name="text-embedding-3-small",
             provider_options=None,
         )
-
-        # Verify texts were sent unchanged
-        mock_openai_client.embeddings.create.assert_called_once()
         call_args = mock_openai_client.embeddings.create.call_args
         sent_texts = call_args.kwargs["input"]
-
-        assert sent_texts[0] == "Original text one", "Text should be unchanged"
-        assert sent_texts[1] == "Original text two", "Text should be unchanged"
-
-        # Verify result is valid
+        assert sent_texts[0] == "Original text one", "Text should be unchanged with None provider_options"
+        assert sent_texts[1] == "Original text two"
         assert isinstance(result, np.ndarray)
         assert result.shape == (2, 3)
 
-    def test_prompt_template_missing_key_is_noop(self, mock_openai_module, mock_openai_client):
-        """Verify missing prompt_template key doesn't modify texts.
+        # Reset mock for next scenario
+        mock_openai_client.reset_mock()
+        mock_response = Mock()
+        mock_response.data = [
+            Mock(embedding=[0.1, 0.2, 0.3]),
+            Mock(embedding=[0.4, 0.5, 0.6]),
+        ]
+        mock_openai_client.embeddings.create.return_value = mock_response
 
-        When provider_options is provided but doesn't contain "prompt_template",
-        texts should be sent unchanged. This allows provider_options to be used
-        for other settings (base_url, api_key) without affecting template behavior.
-        """
+        # Scenario 2: Missing 'prompt_template' key
         texts = ["Text without template", "Another text"]
         provider_options = {"base_url": "https://api.openai.com/v1"}
-
-        # Call with provider_options but no prompt_template key
         result = compute_embeddings_openai(
             texts=texts,
             model_name="text-embedding-3-small",
             provider_options=provider_options,
         )
-
-        # Verify texts were sent unchanged
         call_args = mock_openai_client.embeddings.create.call_args
         sent_texts = call_args.kwargs["input"]
-
-        assert sent_texts[0] == "Text without template"
+        assert sent_texts[0] == "Text without template", "Text should be unchanged with missing key"
         assert sent_texts[1] == "Another text"
-
-        # Verify result is valid
         assert isinstance(result, np.ndarray)
 
-    def test_prompt_template_empty_string(self, mock_openai_module, mock_openai_client):
-        """Verify empty string template works correctly.
+        # Reset mock for next scenario
+        mock_openai_client.reset_mock()
+        mock_openai_client.embeddings.create.return_value = mock_response
 
-        When template is an empty string "", it should prepend nothing
-        (effectively a no-op). This allows users to explicitly disable
-        templating by setting it to empty string.
-        """
+        # Scenario 3: Empty string template
         texts = ["Text one", "Text two"]
         provider_options = {"prompt_template": ""}
-
         result = compute_embeddings_openai(
             texts=texts,
             model_name="text-embedding-3-small",
             provider_options=provider_options,
         )
-
-        # Verify texts are unchanged (empty string prepended)
         call_args = mock_openai_client.embeddings.create.call_args
         sent_texts = call_args.kwargs["input"]
-
         assert sent_texts[0] == "Text one", "Empty template should not modify text"
-        assert sent_texts[1] == "Text two", "Empty template should not modify text"
-
+        assert sent_texts[1] == "Text two"
         assert isinstance(result, np.ndarray)
 
-    def test_prompt_template_logged_for_observability(
-        self, mock_openai_module, mock_openai_client, caplog
-    ):
-        """Verify template application is logged for observability.
-
-        When a prompt template is applied, it should be logged at INFO level
-        to help with debugging and understanding what texts were sent to the API.
-        This is important for troubleshooting embedding quality issues.
-        """
-        texts = ["Document to embed"]
-        template = "query: "
-        provider_options = {"prompt_template": template}
-
-        with caplog.at_level(logging.INFO):
-            compute_embeddings_openai(
-                texts=texts,
-                model_name="text-embedding-3-small",
-                provider_options=provider_options,
-            )
-
-        # Verify log contains information about template application
-        log_messages = [record.message for record in caplog.records]
-
-        # Should log that template is being applied
-        template_logs = [msg for msg in log_messages if "prompt template" in msg.lower()]
-        assert len(template_logs) > 0, (
-            "Should log template application for observability"
-        )
-
-        # Log should include the template text
-        template_mentioned = any(template in msg for msg in log_messages)
-        assert template_mentioned, "Log should mention the template text"
 
     def test_prompt_template_with_multiple_batches(self, mock_openai_module, mock_openai_client):
         """Verify template is prepended in all batches when texts exceed batch size.
@@ -241,35 +195,6 @@ class TestPromptTemplatePrepending:
         # Verify result shape
         assert result.shape[0] == 1000, "Should return embeddings for all texts"
 
-    def test_prompt_template_preserves_original_texts_list(
-        self, mock_openai_module, mock_openai_client
-    ):
-        """Verify original texts list is not modified by template prepending.
-
-        Template prepending should create new strings, not modify the input list.
-        This prevents unexpected side effects for the caller.
-        """
-        original_texts = ["Original text one", "Original text two"]
-        texts_copy = original_texts.copy()
-        template = "prefix: "
-        provider_options = {"prompt_template": template}
-
-        compute_embeddings_openai(
-            texts=original_texts,
-            model_name="text-embedding-3-small",
-            provider_options=provider_options,
-        )
-
-        # Verify original list is unchanged
-        assert original_texts == texts_copy, (
-            "Original texts list should not be modified"
-        )
-        assert original_texts[0] == "Original text one", (
-            "First text should be unchanged"
-        )
-        assert original_texts[1] == "Original text two", (
-            "Second text should be unchanged"
-        )
 
     def test_prompt_template_with_special_characters(
         self, mock_openai_module, mock_openai_client

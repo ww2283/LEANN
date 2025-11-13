@@ -13,42 +13,51 @@ from unittest.mock import Mock, patch, MagicMock
 from leann.cli import LeannCLI
 
 
-@pytest.mark.parametrize("command,base_args,expected_command,template_value", [
-    ("build", ["test-index", "--docs", "/tmp/test-docs"], "build", "search_query: "),
-    ("search", ["test-index", "my query"], "search", "search_query: "),
-])
 class TestCLIPromptTemplateArgument:
     """Tests for --embedding-prompt-template on build and search commands."""
 
-    def test_command_accepts_prompt_template_argument(
-        self, command, base_args, expected_command, template_value
-    ):
-        """Verify that command parser accepts --embedding-prompt-template flag."""
+    def test_commands_accept_prompt_template_argument(self):
+        """Verify that build and search parsers accept --embedding-prompt-template flag."""
         cli = LeannCLI()
         parser = cli.create_parser()
+        template_value = "search_query: "
 
-        args = parser.parse_args(
-            [command] + base_args + ["--embedding-prompt-template", template_value]
+        # Test build command
+        build_args = parser.parse_args(
+            ["build", "test-index", "--docs", "/tmp/test-docs", "--embedding-prompt-template", template_value]
         )
+        assert build_args.command == "build"
+        assert hasattr(build_args, "embedding_prompt_template"), \
+            "build command should have embedding_prompt_template attribute"
+        assert build_args.embedding_prompt_template == template_value
 
-        assert args.command == expected_command
-        assert hasattr(args, "embedding_prompt_template"), \
-            f"{command} command should have embedding_prompt_template attribute"
-        assert args.embedding_prompt_template == template_value
+        # Test search command
+        search_args = parser.parse_args(
+            ["search", "test-index", "my query", "--embedding-prompt-template", template_value]
+        )
+        assert search_args.command == "search"
+        assert hasattr(search_args, "embedding_prompt_template"), \
+            "search command should have embedding_prompt_template attribute"
+        assert search_args.embedding_prompt_template == template_value
 
-    def test_command_prompt_template_default_is_none(
-        self, command, base_args, expected_command, template_value
-    ):
+    def test_commands_default_to_none(self):
         """Verify default value is None when flag not provided (backward compatibility)."""
         cli = LeannCLI()
         parser = cli.create_parser()
 
-        args = parser.parse_args([command] + base_args)
+        # Test build command default
+        build_args = parser.parse_args(["build", "test-index", "--docs", "/tmp/test-docs"])
+        assert hasattr(build_args, "embedding_prompt_template"), \
+            "build command should have embedding_prompt_template attribute"
+        assert build_args.embedding_prompt_template is None, \
+            "Build default value should be None when flag not provided"
 
-        assert hasattr(args, "embedding_prompt_template"), \
-            f"{command} command should have embedding_prompt_template attribute"
-        assert args.embedding_prompt_template is None, \
-            "Default value should be None when flag not provided"
+        # Test search command default
+        search_args = parser.parse_args(["search", "test-index", "my query"])
+        assert hasattr(search_args, "embedding_prompt_template"), \
+            "search command should have embedding_prompt_template attribute"
+        assert search_args.embedding_prompt_template is None, \
+            "Search default value should be None when flag not provided"
 
 
 class TestBuildCommandPromptTemplateArgumentExtras:
