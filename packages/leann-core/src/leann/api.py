@@ -916,6 +916,7 @@ class LeannSearcher:
         metadata_filters: Optional[dict[str, dict[str, Union[str, int, float, bool, list]]]] = None,
         batch_size: int = 0,
         use_grep: bool = False,
+        provider_options: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> list[SearchResult]:
         """
@@ -979,10 +980,24 @@ class LeannSearcher:
 
         start_time = time.time()
 
+        # Extract query template from stored embedding_options with fallback chain:
+        # 1. Check provider_options override (highest priority)
+        # 2. Check query_prompt_template (new format)
+        # 3. Check prompt_template (old format for backward compat)
+        # 4. None (no template)
+        query_template = None
+        if provider_options and "prompt_template" in provider_options:
+            query_template = provider_options["prompt_template"]
+        elif "query_prompt_template" in self.embedding_options:
+            query_template = self.embedding_options["query_prompt_template"]
+        elif "prompt_template" in self.embedding_options:
+            query_template = self.embedding_options["prompt_template"]
+
         query_embedding = self.backend_impl.compute_query_embedding(
             query,
             use_server_if_available=recompute_embeddings,
             zmq_port=zmq_port,
+            query_template=query_template,
         )
         logger.info(f"  Generated embedding shape: {query_embedding.shape}")
         embedding_time = time.time() - start_time

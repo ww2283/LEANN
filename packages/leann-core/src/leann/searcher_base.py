@@ -90,6 +90,7 @@ class BaseSearcher(LeannBackendSearcherInterface, ABC):
         query: str,
         use_server_if_available: bool = True,
         zmq_port: int = 5557,
+        query_template: Optional[str] = None,
     ) -> np.ndarray:
         """
         Compute embedding for a query string.
@@ -125,6 +126,10 @@ class BaseSearcher(LeannBackendSearcherInterface, ABC):
 
         # Fallback to direct computation
         from .embedding_compute import compute_embeddings
+
+        # Apply query template if provided
+        if query_template:
+            query = f"{query_template}{query}"
 
         embedding_mode = self.meta.get("embedding_mode", "sentence-transformers")
         return compute_embeddings(

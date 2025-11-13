@@ -292,6 +292,245 @@ class TestPromptTemplateAutoLoadOnSearch:
             )
 
 
+class TestQueryPromptTemplateAutoLoad:
+    """Tests for automatic loading of separate query_prompt_template during search (R2).
+
+    These tests verify the new two-template system where:
+    - build_prompt_template: Applied during index building
+    - query_prompt_template: Applied during search operations
+
+    Expected to FAIL in Red Phase (R2) because query template extraction
+    and application is not yet implemented in LeannSearcher.search().
+    """
+
+    @pytest.fixture
+    def temp_index_dir(self):
+        """Create temporary directory for test indexes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def mock_compute_embeddings(self):
+        """Mock compute_embeddings to capture calls and return dummy embeddings."""
+        with patch("leann.embedding_compute.compute_embeddings") as mock_compute:
+            mock_compute.return_value = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
+            yield mock_compute
+
+    def test_search_auto_loads_query_template(self, temp_index_dir, mock_compute_embeddings):
+        """
+        Verify that search() automatically loads and applies query_prompt_template from .meta.json.
+
+        Given: Index built with separate build_prompt_template and query_prompt_template
+        When: LeannSearcher.search("my query") is called
+        Then: Query embedding is computed with "query: my query" (query template applied)
+
+        This is the core R2 requirement - query templates must be auto-loaded and applied
+        during search without user intervention.
+
+        Expected failure: compute_embeddings called with raw "my query" instead of
+        "query: my query" because query template extraction is not implemented.
+        """
+        # Setup: Build index with separate templates in new format
+        index_path = temp_index_dir / "query_template.leann"
+
+        builder = LeannBuilder(
+            backend_name="hnsw",
+            embedding_model="text-embedding-3-small",
+            embedding_mode="openai",
+            embedding_options={
+                "build_prompt_template": "doc: ",
+                "query_prompt_template": "query: "
+            },
+        )
+        builder.add_text("Test document")
+        builder.build_index(str(index_path))
+
+        # Reset mock to ignore build calls
+        mock_compute_embeddings.reset_mock()
+
+        # Act: Search with query
+        searcher = LeannSearcher(index_path=str(index_path))
+
+        # Mock the backend search to avoid actual search
+        with patch.object(searcher.backend_impl, 'search') as mock_backend_search:
+            mock_backend_search.return_value = {
+                'labels': [['test_id_0']],  # IDs (nested list for batch support)
+                'distances': [[0.9]]  # Distances (nested list for batch support)
+            }
+
+            searcher.search("my query", top_k=1, recompute_embeddings=False)
+
+        # Assert: compute_embeddings was called with query template applied
+        assert mock_compute_embeddings.called, "compute_embeddings should be called during search"
+
+        # Get the actual text passed to compute_embeddings
+        call_args = mock_compute_embeddings.call_args
+        texts_arg = call_args[0][0]  # First positional arg (list of texts)
+
+        assert len(texts_arg) == 1, "Should compute embedding for one query"
+        assert texts_arg[0] == "query: my query", (
+            f"Query template should be applied: expected 'query: my query', "
+            f"got '{texts_arg[0]}'"
+        )
+
+    def test_search_backward_compat_single_template(self, temp_index_dir, mock_compute_embeddings):
+        """
+        Verify backward compatibility with old single prompt_template format.
+
+        Given: Index with old format (single prompt_template, no query_prompt_template)
+        When: LeannSearcher.search("my query") is called
+        Then: Query embedding computed with "doc: my query" (old template applied)
+
+        This ensures indexes built with the old single-template system continue
+        to work correctly with the new search implementation.
+
+        Expected failure: Old template not recognized/applied because backward
+        compatibility logic is not implemented.
+        """
+        # Setup: Build index with old single-template format
+        index_path = temp_index_dir / "old_template.leann"
+
+        builder = LeannBuilder(
+            backend_name="hnsw",
+            embedding_model="text-embedding-3-small",
+            embedding_mode="openai",
+            embedding_options={"prompt_template": "doc: "},  # Old format
+        )
+        builder.add_text("Test document")
+        builder.build_index(str(index_path))
+
+        # Reset mock
+        mock_compute_embeddings.reset_mock()
+
+        # Act: Search
+        searcher = LeannSearcher(index_path=str(index_path))
+
+        with patch.object(searcher.backend_impl, 'search') as mock_backend_search:
+            mock_backend_search.return_value = {
+                'labels': [['test_id_0']],
+                'distances': [[0.9]]
+            }
+
+            searcher.search("my query", top_k=1, recompute_embeddings=False)
+
+        # Assert: Old template was applied
+        call_args = mock_compute_embeddings.call_args
+        texts_arg = call_args[0][0]
+
+        assert texts_arg[0] == "doc: my query", (
+            f"Old prompt_template should be applied for backward compatibility: "
+            f"expected 'doc: my query', got '{texts_arg[0]}'"
+        )
+
+    def test_search_backward_compat_no_template(self, temp_index_dir, mock_compute_embeddings):
+        """
+        Verify backward compatibility when no template is present in .meta.json.
+
+        Given: Index with no template in .meta.json (very old indexes)
+        When: LeannSearcher.search("my query") is called
+        Then: Query embedding computed with "my query" (no template, raw query)
+
+        This ensures the most basic backward compatibility - indexes without
+        any template support continue to work as before.
+
+        Expected failure: May fail if default template is incorrectly applied,
+        or if missing template causes error.
+        """
+        # Setup: Build index without any template
+        index_path = temp_index_dir / "no_template.leann"
+
+        builder = LeannBuilder(
+            backend_name="hnsw",
+            embedding_model="text-embedding-3-small",
+            embedding_mode="openai",
+            # No embedding_options at all
+        )
+        builder.add_text("Test document")
+        builder.build_index(str(index_path))
+
+        # Reset mock
+        mock_compute_embeddings.reset_mock()
+
+        # Act: Search
+        searcher = LeannSearcher(index_path=str(index_path))
+
+        with patch.object(searcher.backend_impl, 'search') as mock_backend_search:
+            mock_backend_search.return_value = {
+                'labels': [['test_id_0']],
+                'distances': [[0.9]]
+            }
+
+            searcher.search("my query", top_k=1, recompute_embeddings=False)
+
+        # Assert: No template applied (raw query)
+        call_args = mock_compute_embeddings.call_args
+        texts_arg = call_args[0][0]
+
+        assert texts_arg[0] == "my query", (
+            f"No template should be applied when missing from metadata: "
+            f"expected 'my query', got '{texts_arg[0]}'"
+        )
+
+    def test_search_override_via_provider_options(self, temp_index_dir, mock_compute_embeddings):
+        """
+        Verify that explicit provider_options can override stored query template.
+
+        Given: Index with query_prompt_template: "query: "
+        When: search() called with provider_options={"prompt_template": "override: "}
+        Then: Query embedding computed with "override: test" (override takes precedence)
+
+        This enables users to experiment with different query templates without
+        rebuilding the index, or to handle special query types differently.
+
+        Expected failure: provider_options parameter is accepted via **kwargs but
+        not used. Query embedding computed with raw "test" instead of "override: test"
+        because override logic is not implemented.
+        """
+        # Setup: Build index with query template
+        index_path = temp_index_dir / "override_template.leann"
+
+        builder = LeannBuilder(
+            backend_name="hnsw",
+            embedding_model="text-embedding-3-small",
+            embedding_mode="openai",
+            embedding_options={
+                "build_prompt_template": "doc: ",
+                "query_prompt_template": "query: "
+            },
+        )
+        builder.add_text("Test document")
+        builder.build_index(str(index_path))
+
+        # Reset mock
+        mock_compute_embeddings.reset_mock()
+
+        # Act: Search with override
+        searcher = LeannSearcher(index_path=str(index_path))
+
+        with patch.object(searcher.backend_impl, 'search') as mock_backend_search:
+            mock_backend_search.return_value = {
+                'labels': [['test_id_0']],
+                'distances': [[0.9]]
+            }
+
+            # This should accept provider_options parameter
+            searcher.search(
+                "test",
+                top_k=1,
+                recompute_embeddings=False,
+                provider_options={"prompt_template": "override: "}
+            )
+
+        # Assert: Override template was applied
+        call_args = mock_compute_embeddings.call_args
+        texts_arg = call_args[0][0]
+
+        assert texts_arg[0] == "override: test", (
+            f"Override template should take precedence: "
+            f"expected 'override: test', got '{texts_arg[0]}'"
+        )
+
+
 class TestPromptTemplateReuseInChat:
     """Tests for prompt template reuse in chat/ask operations."""
 

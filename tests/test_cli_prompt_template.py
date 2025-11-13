@@ -171,6 +171,199 @@ class TestPromptTemplateStoredInEmbeddingOptions:
                    embedding_options["prompt_template"] is None, \
                    "prompt_template should not be set when flag not provided"
 
+    # R1 Tests: Build-time separate template storage
+    @patch("leann.cli.LeannBuilder")
+    def test_build_stores_separate_templates(
+        self, mock_builder_class, tmp_path
+    ):
+        """
+        R1 Test 1: Verify that when both --embedding-prompt-template and
+        --query-prompt-template are provided to build command, both values
+        are stored separately in embedding_options dict as build_prompt_template
+        and query_prompt_template.
+
+        This test will fail because:
+        1. CLI doesn't accept --query-prompt-template flag yet
+        2. CLI doesn't store templates as separate build_prompt_template and
+           query_prompt_template keys
+
+        Expected behavior after implementation:
+        - .meta.json contains: {"embedding_options": {
+            "build_prompt_template": "doc: ",
+            "query_prompt_template": "query: "
+          }}
+        """
+        # Setup mocks
+        mock_builder = Mock()
+        mock_builder_class.return_value = mock_builder
+
+        cli = LeannCLI()
+
+        # Mock load_documents to return a document so builder is created
+        cli.load_documents = Mock(return_value=[
+            {"text": "test content", "metadata": {}}
+        ])
+
+        parser = cli.create_parser()
+
+        build_template = "doc: "
+        query_template = "query: "
+        args = parser.parse_args([
+            "build",
+            "test-index",
+            "--docs", str(tmp_path),
+            "--embedding-prompt-template", build_template,
+            "--query-prompt-template", query_template,
+            "--force"
+        ])
+
+        # Run the build command
+        import asyncio
+        asyncio.run(cli.build_index(args))
+
+        # Check that LeannBuilder was called with separate template keys
+        call_kwargs = mock_builder_class.call_args.kwargs
+        assert "embedding_options" in call_kwargs, \
+            "LeannBuilder should receive embedding_options"
+
+        embedding_options = call_kwargs["embedding_options"]
+        assert embedding_options is not None, \
+            "embedding_options should not be None when templates provided"
+
+        assert "build_prompt_template" in embedding_options, \
+            "embedding_options should contain 'build_prompt_template' key"
+        assert embedding_options["build_prompt_template"] == build_template, \
+            f"build_prompt_template should be '{build_template}'"
+
+        assert "query_prompt_template" in embedding_options, \
+            "embedding_options should contain 'query_prompt_template' key"
+        assert embedding_options["query_prompt_template"] == query_template, \
+            f"query_prompt_template should be '{query_template}'"
+
+        # Old key should NOT be present when using new separate template format
+        assert "prompt_template" not in embedding_options, \
+            "Old 'prompt_template' key should not be present with separate templates"
+
+    @patch("leann.cli.LeannBuilder")
+    def test_build_backward_compat_single_template(
+        self, mock_builder_class, tmp_path
+    ):
+        """
+        R1 Test 2: Verify backward compatibility - when only
+        --embedding-prompt-template is provided (old behavior), it should
+        still be stored as 'prompt_template' in embedding_options.
+
+        This ensures existing workflows continue to work unchanged.
+
+        This test currently passes because it matches existing behavior, but it
+        documents the requirement that this behavior must be preserved after
+        implementing the separate template feature.
+
+        Expected behavior:
+        - .meta.json contains: {"embedding_options": {"prompt_template": "prompt: "}}
+        - No build_prompt_template or query_prompt_template keys
+        """
+        # Setup mocks
+        mock_builder = Mock()
+        mock_builder_class.return_value = mock_builder
+
+        cli = LeannCLI()
+
+        # Mock load_documents to return a document so builder is created
+        cli.load_documents = Mock(return_value=[
+            {"text": "test content", "metadata": {}}
+        ])
+
+        parser = cli.create_parser()
+
+        template = "prompt: "
+        args = parser.parse_args([
+            "build",
+            "test-index",
+            "--docs", str(tmp_path),
+            "--embedding-prompt-template", template,
+            "--force"
+        ])
+
+        # Run the build command
+        import asyncio
+        asyncio.run(cli.build_index(args))
+
+        # Check that LeannBuilder was called with old format
+        call_kwargs = mock_builder_class.call_args.kwargs
+        assert "embedding_options" in call_kwargs, \
+            "LeannBuilder should receive embedding_options"
+
+        embedding_options = call_kwargs["embedding_options"]
+        assert embedding_options is not None, \
+            "embedding_options should not be None when template provided"
+
+        assert "prompt_template" in embedding_options, \
+            "embedding_options should contain old 'prompt_template' key for backward compat"
+        assert embedding_options["prompt_template"] == template, \
+            f"prompt_template should be '{template}'"
+
+        # New keys should NOT be present in backward compat mode
+        assert "build_prompt_template" not in embedding_options, \
+            "build_prompt_template should not be present with single template flag"
+        assert "query_prompt_template" not in embedding_options, \
+            "query_prompt_template should not be present with single template flag"
+
+    @patch("leann.cli.LeannBuilder")
+    def test_build_no_templates(
+        self, mock_builder_class, tmp_path
+    ):
+        """
+        R1 Test 3: Verify that when no template flags are provided,
+        embedding_options has no prompt template keys.
+
+        This ensures clean defaults and no unnecessary keys in .meta.json.
+
+        This test currently passes because it matches existing behavior, but it
+        documents the requirement that this behavior must be preserved after
+        implementing the separate template feature.
+
+        Expected behavior:
+        - .meta.json has no prompt_template, build_prompt_template, or
+          query_prompt_template keys (or embedding_options is empty/None)
+        """
+        # Setup mocks
+        mock_builder = Mock()
+        mock_builder_class.return_value = mock_builder
+
+        cli = LeannCLI()
+
+        # Mock load_documents to return a document so builder is created
+        cli.load_documents = Mock(return_value=[
+            {"text": "test content", "metadata": {}}
+        ])
+
+        parser = cli.create_parser()
+
+        args = parser.parse_args([
+            "build",
+            "test-index",
+            "--docs", str(tmp_path),
+            "--force"
+        ])
+
+        # Run the build command
+        import asyncio
+        asyncio.run(cli.build_index(args))
+
+        # Check that no template keys are present
+        call_kwargs = mock_builder_class.call_args.kwargs
+        if "embedding_options" in call_kwargs and call_kwargs["embedding_options"]:
+            embedding_options = call_kwargs["embedding_options"]
+
+            # None of the template keys should be present
+            assert "prompt_template" not in embedding_options, \
+                "prompt_template should not be present when no flags provided"
+            assert "build_prompt_template" not in embedding_options, \
+                "build_prompt_template should not be present when no flags provided"
+            assert "query_prompt_template" not in embedding_options, \
+                "query_prompt_template should not be present when no flags provided"
+
 
 class TestPromptTemplateFlowsToComputeEmbeddings:
     """Tests for template flowing through to compute_embeddings function."""
