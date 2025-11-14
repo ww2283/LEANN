@@ -99,10 +99,16 @@ class BaseSearcher(LeannBackendSearcherInterface, ABC):
             query: The query string to embed
             zmq_port: ZMQ port for embedding server
             use_server_if_available: Whether to try using embedding server first
+            query_template: Optional prompt template to prepend to query
 
         Returns:
             Query embedding as numpy array
         """
+        # Apply query template BEFORE any computation path
+        # This ensures template is applied consistently for both server and fallback paths
+        if query_template:
+            query = f"{query_template}{query}"
+
         # Try to use embedding server if available and requested
         if use_server_if_available:
             try:
@@ -126,10 +132,6 @@ class BaseSearcher(LeannBackendSearcherInterface, ABC):
 
         # Fallback to direct computation
         from .embedding_compute import compute_embeddings
-
-        # Apply query template if provided
-        if query_template:
-            query = f"{query_template}{query}"
 
         embedding_mode = self.meta.get("embedding_mode", "sentence-transformers")
         return compute_embeddings(

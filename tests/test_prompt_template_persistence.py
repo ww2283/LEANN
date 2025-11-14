@@ -522,3 +522,291 @@ class TestPromptTemplateIntegrationWithEmbeddingModes:
             # Template should be saved for all modes (even if not used by some)
             if "embedding_options" in meta_data:
                 assert meta_data["embedding_options"]["prompt_template"] == template
+
+
+class TestQueryTemplateApplicationInComputeEmbedding:
+    """Tests for query template application in compute_query_embedding() (Bug Fix).
+
+    These tests verify that query templates are applied consistently in BOTH
+    code paths (server and fallback) when computing query embeddings.
+
+    This addresses the bug where query templates were only applied in the
+    fallback path, not when using the embedding server (the default path).
+
+    Bug Context:
+    - Issue: Query templates were stored in metadata but only applied during
+      fallback (direct) computation, not when using embedding server
+    - Fix: Move template application to BEFORE any computation path in
+      compute_query_embedding() (searcher_base.py:107-110)
+    - Impact: Critical for models like EmbeddingGemma that require task-specific
+      templates for optimal performance
+
+    These tests ensure the fix works correctly and prevent regression.
+    """
+
+    @pytest.fixture
+    def temp_index_with_template(self):
+        """Create a temporary index with query template in metadata"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            index_dir = Path(tmpdir)
+            index_file = index_dir / "test.leann"
+            meta_file = index_dir / "test.leann.meta.json"
+
+            # Create minimal metadata with query template
+            metadata = {
+                "version": "1.0",
+                "backend_name": "hnsw",
+                "embedding_model": "text-embedding-embeddinggemma-300m-qat",
+                "dimensions": 768,
+                "embedding_mode": "openai",
+                "backend_kwargs": {
+                    "graph_degree": 32,
+                    "complexity": 64,
+                    "distance_metric": "cosine",
+                },
+                "embedding_options": {
+                    "base_url": "http://localhost:1234/v1",
+                    "api_key": "test-key",
+                    "build_prompt_template": "title: none | text: ",
+                    "query_prompt_template": "task: search result | query: ",
+                },
+            }
+
+            meta_file.write_text(json.dumps(metadata, indent=2))
+
+            # Create minimal HNSW index file (empty is okay for this test)
+            index_file.write_bytes(b"")
+
+            yield str(index_file)
+
+    def test_query_template_applied_in_fallback_path(self, temp_index_with_template):
+        """Test that query template is applied when using fallback (direct) path"""
+        from leann.searcher_base import BaseSearcher
+
+        # Create a concrete implementation for testing
+        class TestSearcher(BaseSearcher):
+            def search(self, query_vectors, top_k, complexity, beam_width=1, **kwargs):
+                return {"labels": [], "distances": []}
+
+        searcher = object.__new__(TestSearcher)
+        searcher.index_path = Path(temp_index_with_template)
+        searcher.index_dir = searcher.index_path.parent
+
+        # Load metadata
+        meta_file = searcher.index_dir / f"{searcher.index_path.name}.meta.json"
+        with open(meta_file) as f:
+            searcher.meta = json.load(f)
+
+        searcher.embedding_model = searcher.meta["embedding_model"]
+        searcher.embedding_mode = searcher.meta.get("embedding_mode", "sentence-transformers")
+        searcher.embedding_options = searcher.meta.get("embedding_options", {})
+
+        # Mock compute_embeddings to capture the query text
+        captured_queries = []
+
+        def mock_compute_embeddings(texts, model, mode, provider_options=None):
+            captured_queries.extend(texts)
+            return np.random.rand(len(texts), 768).astype(np.float32)
+
+        with patch(
+            "leann.embedding_compute.compute_embeddings", side_effect=mock_compute_embeddings
+        ):
+            # Call compute_query_embedding with template (fallback path)
+            result = searcher.compute_query_embedding(
+                query="vector database",
+                use_server_if_available=False,  # Force fallback path
+                query_template="task: search result | query: ",
+            )
+
+        # Verify template was applied
+        assert len(captured_queries) == 1
+        assert captured_queries[0] == "task: search result | query: vector database"
+        assert result.shape == (1, 768)
+
+    def test_query_template_applied_in_server_path(self, temp_index_with_template):
+        """Test that query template is applied when using server path"""
+        from leann.searcher_base import BaseSearcher
+
+        # Create a concrete implementation for testing
+        class TestSearcher(BaseSearcher):
+            def search(self, query_vectors, top_k, complexity, beam_width=1, **kwargs):
+                return {"labels": [], "distances": []}
+
+        searcher = object.__new__(TestSearcher)
+        searcher.index_path = Path(temp_index_with_template)
+        searcher.index_dir = searcher.index_path.parent
+
+        # Load metadata
+        meta_file = searcher.index_dir / f"{searcher.index_path.name}.meta.json"
+        with open(meta_file) as f:
+            searcher.meta = json.load(f)
+
+        searcher.embedding_model = searcher.meta["embedding_model"]
+        searcher.embedding_mode = searcher.meta.get("embedding_mode", "sentence-transformers")
+        searcher.embedding_options = searcher.meta.get("embedding_options", {})
+
+        # Mock the server methods to capture the query text
+        captured_queries = []
+
+        def mock_ensure_server_running(passages_file, port):
+            return port
+
+        def mock_compute_embedding_via_server(chunks, port):
+            captured_queries.extend(chunks)
+            return np.random.rand(len(chunks), 768).astype(np.float32)
+
+        searcher._ensure_server_running = mock_ensure_server_running
+        searcher._compute_embedding_via_server = mock_compute_embedding_via_server
+
+        # Call compute_query_embedding with template (server path)
+        result = searcher.compute_query_embedding(
+            query="vector database",
+            use_server_if_available=True,  # Use server path
+            query_template="task: search result | query: ",
+        )
+
+        # Verify template was applied BEFORE calling server
+        assert len(captured_queries) == 1
+        assert captured_queries[0] == "task: search result | query: vector database"
+        assert result.shape == (1, 768)
+
+    def test_query_template_without_template_parameter(self, temp_index_with_template):
+        """Test that query is unchanged when no template is provided"""
+        from leann.searcher_base import BaseSearcher
+
+        class TestSearcher(BaseSearcher):
+            def search(self, query_vectors, top_k, complexity, beam_width=1, **kwargs):
+                return {"labels": [], "distances": []}
+
+        searcher = object.__new__(TestSearcher)
+        searcher.index_path = Path(temp_index_with_template)
+        searcher.index_dir = searcher.index_path.parent
+
+        meta_file = searcher.index_dir / f"{searcher.index_path.name}.meta.json"
+        with open(meta_file) as f:
+            searcher.meta = json.load(f)
+
+        searcher.embedding_model = searcher.meta["embedding_model"]
+        searcher.embedding_mode = searcher.meta.get("embedding_mode", "sentence-transformers")
+        searcher.embedding_options = searcher.meta.get("embedding_options", {})
+
+        captured_queries = []
+
+        def mock_compute_embeddings(texts, model, mode, provider_options=None):
+            captured_queries.extend(texts)
+            return np.random.rand(len(texts), 768).astype(np.float32)
+
+        with patch(
+            "leann.embedding_compute.compute_embeddings", side_effect=mock_compute_embeddings
+        ):
+            result = searcher.compute_query_embedding(
+                query="vector database",
+                use_server_if_available=False,
+                query_template=None,  # No template
+            )
+
+        # Verify query is unchanged
+        assert len(captured_queries) == 1
+        assert captured_queries[0] == "vector database"
+
+    def test_query_template_consistency_between_paths(self, temp_index_with_template):
+        """Test that both paths apply template identically"""
+        from leann.searcher_base import BaseSearcher
+
+        class TestSearcher(BaseSearcher):
+            def search(self, query_vectors, top_k, complexity, beam_width=1, **kwargs):
+                return {"labels": [], "distances": []}
+
+        searcher = object.__new__(TestSearcher)
+        searcher.index_path = Path(temp_index_with_template)
+        searcher.index_dir = searcher.index_path.parent
+
+        meta_file = searcher.index_dir / f"{searcher.index_path.name}.meta.json"
+        with open(meta_file) as f:
+            searcher.meta = json.load(f)
+
+        searcher.embedding_model = searcher.meta["embedding_model"]
+        searcher.embedding_mode = searcher.meta.get("embedding_mode", "sentence-transformers")
+        searcher.embedding_options = searcher.meta.get("embedding_options", {})
+
+        query_template = "task: search result | query: "
+        original_query = "vector database"
+
+        # Capture queries from fallback path
+        fallback_queries = []
+
+        def mock_compute_embeddings(texts, model, mode, provider_options=None):
+            fallback_queries.extend(texts)
+            return np.random.rand(len(texts), 768).astype(np.float32)
+
+        with patch(
+            "leann.embedding_compute.compute_embeddings", side_effect=mock_compute_embeddings
+        ):
+            searcher.compute_query_embedding(
+                query=original_query,
+                use_server_if_available=False,
+                query_template=query_template,
+            )
+
+        # Capture queries from server path
+        server_queries = []
+
+        def mock_ensure_server_running(passages_file, port):
+            return port
+
+        def mock_compute_embedding_via_server(chunks, port):
+            server_queries.extend(chunks)
+            return np.random.rand(len(chunks), 768).astype(np.float32)
+
+        searcher._ensure_server_running = mock_ensure_server_running
+        searcher._compute_embedding_via_server = mock_compute_embedding_via_server
+
+        searcher.compute_query_embedding(
+            query=original_query,
+            use_server_if_available=True,
+            query_template=query_template,
+        )
+
+        # Verify both paths produced identical templated queries
+        assert len(fallback_queries) == 1
+        assert len(server_queries) == 1
+        assert fallback_queries[0] == server_queries[0]
+        assert fallback_queries[0] == f"{query_template}{original_query}"
+
+    def test_query_template_with_empty_string(self, temp_index_with_template):
+        """Test behavior with empty template string"""
+        from leann.searcher_base import BaseSearcher
+
+        class TestSearcher(BaseSearcher):
+            def search(self, query_vectors, top_k, complexity, beam_width=1, **kwargs):
+                return {"labels": [], "distances": []}
+
+        searcher = object.__new__(TestSearcher)
+        searcher.index_path = Path(temp_index_with_template)
+        searcher.index_dir = searcher.index_path.parent
+
+        meta_file = searcher.index_dir / f"{searcher.index_path.name}.meta.json"
+        with open(meta_file) as f:
+            searcher.meta = json.load(f)
+
+        searcher.embedding_model = searcher.meta["embedding_model"]
+        searcher.embedding_mode = searcher.meta.get("embedding_mode", "sentence-transformers")
+        searcher.embedding_options = searcher.meta.get("embedding_options", {})
+
+        captured_queries = []
+
+        def mock_compute_embeddings(texts, model, mode, provider_options=None):
+            captured_queries.extend(texts)
+            return np.random.rand(len(texts), 768).astype(np.float32)
+
+        with patch(
+            "leann.embedding_compute.compute_embeddings", side_effect=mock_compute_embeddings
+        ):
+            result = searcher.compute_query_embedding(
+                query="vector database",
+                use_server_if_available=False,
+                query_template="",  # Empty string
+            )
+
+        # Empty string is falsy, so no template should be applied
+        assert captured_queries[0] == "vector database"
