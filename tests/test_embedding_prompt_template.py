@@ -39,8 +39,11 @@ class TestPromptTemplatePrepending:
         return mock_client
 
     @pytest.fixture
-    def mock_openai_module(self, mock_openai_client):
+    def mock_openai_module(self, mock_openai_client, monkeypatch):
         """Mock the openai module to return our mock client."""
+        # Mock the API key environment variable
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-test-key-for-mocking")
+
         # openai is imported inside the function, so we need to patch it there
         with patch("openai.OpenAI", return_value=mock_openai_client) as mock_openai:
             yield mock_openai
