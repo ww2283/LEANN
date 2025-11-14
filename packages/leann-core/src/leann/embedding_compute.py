@@ -265,7 +265,11 @@ def _query_lmstudio_context_limit(model_name: str, base_url: str) -> Optional[in
                 global_modules = npm_root.stdout.strip()
                 # Append to existing NODE_PATH if present
                 existing_node_path = env.get("NODE_PATH", "")
-                env["NODE_PATH"] = f"{global_modules}:{existing_node_path}" if existing_node_path else global_modules
+                env["NODE_PATH"] = (
+                    f"{global_modules}:{existing_node_path}"
+                    if existing_node_path
+                    else global_modules
+                )
         except Exception:
             # If npm not available, continue with existing NODE_PATH
             pass
@@ -785,7 +789,7 @@ def compute_embeddings_openai(
                 )
 
             # Only take the number of embeddings that match the batch size
-            all_embeddings.extend(batch_embeddings[:len(batch_texts)])
+            all_embeddings.extend(batch_embeddings[: len(batch_texts)])
         except Exception as e:
             logger.error(f"Batch {i} failed: {e}")
             raise

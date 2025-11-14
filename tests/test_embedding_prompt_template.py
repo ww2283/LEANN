@@ -13,12 +13,10 @@ All tests are written in Red Phase - they should FAIL initially because the
 implementation does not exist yet.
 """
 
-import logging
 from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
 import pytest
-
 from leann.embedding_compute import compute_embeddings_openai
 
 
@@ -108,7 +106,9 @@ class TestPromptTemplatePrepending:
         )
         call_args = mock_openai_client.embeddings.create.call_args
         sent_texts = call_args.kwargs["input"]
-        assert sent_texts[0] == "Original text one", "Text should be unchanged with None provider_options"
+        assert sent_texts[0] == "Original text one", (
+            "Text should be unchanged with None provider_options"
+        )
         assert sent_texts[1] == "Original text two"
         assert isinstance(result, np.ndarray)
         assert result.shape == (2, 3)
@@ -154,7 +154,6 @@ class TestPromptTemplatePrepending:
         assert sent_texts[1] == "Text two"
         assert isinstance(result, np.ndarray)
 
-
     def test_prompt_template_with_multiple_batches(self, mock_openai_module, mock_openai_client):
         """Verify template is prepended in all batches when texts exceed batch size.
 
@@ -195,10 +194,7 @@ class TestPromptTemplatePrepending:
         # Verify result shape
         assert result.shape[0] == 1000, "Should return embeddings for all texts"
 
-
-    def test_prompt_template_with_special_characters(
-        self, mock_openai_module, mock_openai_client
-    ):
+    def test_prompt_template_with_special_characters(self, mock_openai_module, mock_openai_client):
         """Verify template with special characters is handled correctly.
 
         Templates may contain special characters, Unicode, newlines, etc.
@@ -280,5 +276,3 @@ class TestPromptTemplatePrepending:
         assert client_init_kwargs["api_key"] == "test-key-123"
 
         assert isinstance(result, np.ndarray)
-
-

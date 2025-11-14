@@ -24,7 +24,7 @@ The function contract:
 """
 
 import subprocess
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
@@ -105,9 +105,7 @@ class TestLMStudioBridge:
             mock_result.returncode = 1
             mock_result.stdout = ""
             mock_result.stderr = (
-                "Error: Cannot find module '@lmstudio/sdk'\n"
-                "Require stack:\n"
-                "- /path/to/script.js"
+                "Error: Cannot find module '@lmstudio/sdk'\nRequire stack:\n- /path/to/script.js"
             )
             return mock_result
 
@@ -128,9 +126,7 @@ class TestLMStudioBridge:
         """
 
         def mock_run(*args, **kwargs):
-            raise subprocess.TimeoutExpired(
-                cmd=["node", "lmstudio_bridge.js"], timeout=10
-            )
+            raise subprocess.TimeoutExpired(cmd=["node", "lmstudio_bridge.js"], timeout=10)
 
         monkeypatch.setattr("subprocess.run", mock_run)
 
@@ -266,9 +262,7 @@ class TestLMStudioBridge:
             (32768, 32768),  # Very large context
         ],
     )
-    def test_query_lmstudio_various_context_lengths(
-        self, monkeypatch, context_length, expected
-    ):
+    def test_query_lmstudio_various_context_lengths(self, monkeypatch, context_length, expected):
         """Verify SDK query handles various context length values.
 
         Different models have different context lengths. The function should
@@ -306,9 +300,7 @@ class TestLMStudioBridge:
 
         monkeypatch.setattr("subprocess.run", mock_run)
 
-        _query_lmstudio_context_limit(
-            model_name="test-model", base_url="ws://localhost:1234"
-        )
+        _query_lmstudio_context_limit(model_name="test-model", base_url="ws://localhost:1234")
 
         # Check that debug logging occurred (not warning/error)
         debug_logs = [record for record in caplog.records if record.levelname == "DEBUG"]
@@ -316,9 +308,7 @@ class TestLMStudioBridge:
 
         # Verify no WARNING or ERROR logs
         warning_or_error_logs = [
-            record
-            for record in caplog.records
-            if record.levelname in ["WARNING", "ERROR"]
+            record for record in caplog.records if record.levelname in ["WARNING", "ERROR"]
         ]
         assert len(warning_or_error_logs) == 0, (
             "Should not log at WARNING/ERROR level for expected failures"

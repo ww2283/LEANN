@@ -15,14 +15,12 @@ Prerequisites:
 4. [Optional] Node.js + @lmstudio/sdk for context length detection
 """
 
-import json
 import logging
 import socket
 
 import numpy as np
 import pytest
 import requests
-
 from leann.embedding_compute import (
     compute_embeddings_ollama,
     compute_embeddings_openai,
@@ -86,8 +84,7 @@ class TestPromptTemplateOpenAI:
     """End-to-end tests for prompt template with OpenAI-compatible APIs (LM Studio)."""
 
     @pytest.mark.skipif(
-        not check_lmstudio_available(),
-        reason="LM Studio service not available on localhost:1234"
+        not check_lmstudio_available(), reason="LM Studio service not available on localhost:1234"
     )
     def test_lmstudio_embedding_with_prompt_template(self):
         """Test prompt templates with LM Studio using OpenAI-compatible API."""
@@ -105,7 +102,7 @@ class TestPromptTemplateOpenAI:
             model_name=model_name,
             base_url="http://localhost:1234/v1",
             api_key="lm-studio",  # LM Studio doesn't require real key
-            provider_options=provider_options
+            provider_options=provider_options,
         )
 
         assert embeddings is not None
@@ -113,12 +110,11 @@ class TestPromptTemplateOpenAI:
         assert all(isinstance(emb, np.ndarray) for emb in embeddings)
         assert all(len(emb) > 0 for emb in embeddings)
 
-        logger.info(f"✓ LM Studio embeddings with prompt template: {len(embeddings)} vectors, {len(embeddings[0])} dimensions")
+        logger.info(
+            f"✓ LM Studio embeddings with prompt template: {len(embeddings)} vectors, {len(embeddings[0])} dimensions"
+        )
 
-    @pytest.mark.skipif(
-        not check_lmstudio_available(),
-        reason="LM Studio service not available"
-    )
+    @pytest.mark.skipif(not check_lmstudio_available(), reason="LM Studio service not available")
     def test_lmstudio_prompt_template_affects_embeddings(self):
         """Verify that prompt templates actually change embedding values."""
         model_name = get_lmstudio_first_model()
@@ -135,7 +131,7 @@ class TestPromptTemplateOpenAI:
             model_name=model_name,
             base_url=base_url,
             api_key=api_key,
-            provider_options={}
+            provider_options={},
         )
 
         # Get embeddings with template
@@ -144,7 +140,7 @@ class TestPromptTemplateOpenAI:
             model_name=model_name,
             base_url=base_url,
             api_key=api_key,
-            provider_options={"prompt_template": "search_query: "}
+            provider_options={"prompt_template": "search_query: "},
         )
 
         # Embeddings should be different when template is applied
@@ -157,8 +153,7 @@ class TestPromptTemplateOllama:
     """End-to-end tests for prompt template with Ollama."""
 
     @pytest.mark.skipif(
-        not check_ollama_available(),
-        reason="Ollama service not available on localhost:11434"
+        not check_ollama_available(), reason="Ollama service not available on localhost:11434"
     )
     def test_ollama_embedding_with_prompt_template(self):
         """Test prompt templates with Ollama using any available embedding model."""
@@ -189,7 +184,7 @@ class TestPromptTemplateOllama:
                 model_name=model_name,
                 is_build=False,
                 host="http://localhost:11434",
-                provider_options=provider_options
+                provider_options=provider_options,
             )
 
             assert embeddings is not None
@@ -197,15 +192,14 @@ class TestPromptTemplateOllama:
             assert all(isinstance(emb, np.ndarray) for emb in embeddings)
             assert all(len(emb) > 0 for emb in embeddings)
 
-            logger.info(f"✓ Ollama embeddings with prompt template: {len(embeddings)} vectors, {len(embeddings[0])} dimensions")
+            logger.info(
+                f"✓ Ollama embeddings with prompt template: {len(embeddings)} vectors, {len(embeddings[0])} dimensions"
+            )
 
         except Exception as e:
             pytest.skip(f"Could not test Ollama prompt template: {e}")
 
-    @pytest.mark.skipif(
-        not check_ollama_available(),
-        reason="Ollama service not available"
-    )
+    @pytest.mark.skipif(not check_ollama_available(), reason="Ollama service not available")
     def test_ollama_prompt_template_affects_embeddings(self):
         """Verify that prompt templates actually change embedding values with Ollama."""
         # Get any available embedding model
@@ -229,11 +223,7 @@ class TestPromptTemplateOllama:
 
             # Get embeddings without template
             embeddings_no_template = compute_embeddings_ollama(
-                texts=[text],
-                model_name=model_name,
-                is_build=False,
-                host=host,
-                provider_options={}
+                texts=[text], model_name=model_name, is_build=False, host=host, provider_options={}
             )
 
             # Get embeddings with template
@@ -242,7 +232,7 @@ class TestPromptTemplateOllama:
                 model_name=model_name,
                 is_build=False,
                 host=host,
-                provider_options={"prompt_template": "search_query: "}
+                provider_options={"prompt_template": "search_query: "},
             )
 
             # Embeddings should be different when template is applied
@@ -257,10 +247,7 @@ class TestPromptTemplateOllama:
 class TestLMStudioSDK:
     """End-to-end tests for LM Studio SDK integration."""
 
-    @pytest.mark.skipif(
-        not check_lmstudio_available(),
-        reason="LM Studio service not available"
-    )
+    @pytest.mark.skipif(not check_lmstudio_available(), reason="LM Studio service not available")
     def test_lmstudio_model_listing(self):
         """Test that we can list models from LM Studio."""
         try:
@@ -278,10 +265,7 @@ class TestLMStudioSDK:
         except Exception as e:
             pytest.skip(f"LM Studio API error: {e}")
 
-    @pytest.mark.skipif(
-        not check_lmstudio_available(),
-        reason="LM Studio service not available"
-    )
+    @pytest.mark.skipif(not check_lmstudio_available(), reason="LM Studio service not available")
     def test_lmstudio_sdk_context_length_detection(self):
         """Test context length detection via LM Studio SDK bridge (requires Node.js + SDK)."""
         model_name = get_lmstudio_first_model()
@@ -293,16 +277,19 @@ class TestLMStudioSDK:
 
             # SDK requires WebSocket URL (ws://)
             context_length = _query_lmstudio_context_limit(
-                model_name=model_name,
-                base_url="ws://localhost:1234"
+                model_name=model_name, base_url="ws://localhost:1234"
             )
 
             if context_length is None:
-                logger.warning("⚠ LM Studio SDK bridge returned None (Node.js or SDK may not be available)")
+                logger.warning(
+                    "⚠ LM Studio SDK bridge returned None (Node.js or SDK may not be available)"
+                )
                 pytest.skip("Node.js or @lmstudio/sdk not available - SDK bridge unavailable")
             else:
                 assert context_length > 0
-                logger.info(f"✓ LM Studio context length detected via SDK: {context_length} for {model_name}")
+                logger.info(
+                    f"✓ LM Studio context length detected via SDK: {context_length} for {model_name}"
+                )
 
         except ImportError:
             pytest.skip("_query_lmstudio_context_limit not implemented yet")
@@ -314,10 +301,7 @@ class TestLMStudioSDK:
 class TestOllamaTokenLimit:
     """End-to-end tests for Ollama token limit discovery."""
 
-    @pytest.mark.skipif(
-        not check_ollama_available(),
-        reason="Ollama service not available"
-    )
+    @pytest.mark.skipif(not check_ollama_available(), reason="Ollama service not available")
     def test_ollama_token_limit_detection(self):
         """Test dynamic token limit detection from Ollama /api/show endpoint."""
         # Get any available embedding model
@@ -338,10 +322,7 @@ class TestOllamaTokenLimit:
             test_model = embedding_models[0]
 
             # Test token limit detection
-            limit = get_model_token_limit(
-                model_name=test_model,
-                base_url="http://localhost:11434"
-            )
+            limit = get_model_token_limit(model_name=test_model, base_url="http://localhost:11434")
 
             assert limit > 0
             logger.info(f"✓ Ollama token limit detected: {limit} for {test_model}")
@@ -358,7 +339,7 @@ class TestHybridTokenLimit:
         # Use a known OpenAI model (should be in registry)
         limit = get_model_token_limit(
             model_name="text-embedding-3-small",
-            base_url="http://fake-server:9999"  # Fake URL to force registry lookup
+            base_url="http://fake-server:9999",  # Fake URL to force registry lookup
         )
 
         # text-embedding-3-small should have 8192 in registry
@@ -370,17 +351,14 @@ class TestHybridTokenLimit:
         limit = get_model_token_limit(
             model_name="completely-unknown-model-xyz-12345",
             base_url="http://fake-server:9999",
-            default=512
+            default=512,
         )
 
         # Should get the specified default
         assert limit == 512
         logger.info(f"✓ Hybrid discovery (default fallback): {limit} tokens")
 
-    @pytest.mark.skipif(
-        not check_ollama_available(),
-        reason="Ollama service not available"
-    )
+    @pytest.mark.skipif(not check_ollama_available(), reason="Ollama service not available")
     def test_hybrid_discovery_ollama_dynamic_first(self):
         """Test that Ollama models use dynamic discovery first."""
         # Get any available embedding model
@@ -401,10 +379,7 @@ class TestHybridTokenLimit:
             test_model = embedding_models[0]
 
             # Should query Ollama /api/show dynamically
-            limit = get_model_token_limit(
-                model_name=test_model,
-                base_url="http://localhost:11434"
-            )
+            limit = get_model_token_limit(model_name=test_model, base_url="http://localhost:11434")
 
             assert limit > 0
             logger.info(f"✓ Hybrid discovery (Ollama dynamic): {limit} tokens for {test_model}")
@@ -414,12 +389,12 @@ class TestHybridTokenLimit:
 
 
 if __name__ == "__main__":
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("INTEGRATION TEST SUITE - Real Service Testing")
-    print("="*70)
+    print("=" * 70)
     print("\nThese tests require live services:")
     print("  • LM Studio: http://localhost:1234 (with embedding model loaded)")
     print("  • [Optional] Ollama: http://localhost:11434")
     print("  • [Optional] Node.js + @lmstudio/sdk for SDK bridge tests")
     print("\nRun with: pytest tests/test_prompt_template_e2e.py -v -s")
-    print("="*70 + "\n")
+    print("=" * 70 + "\n")

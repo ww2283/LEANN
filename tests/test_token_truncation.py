@@ -13,7 +13,6 @@ implementation does not exist yet.
 
 import pytest
 import tiktoken
-from unittest.mock import Mock
 from leann.embedding_compute import (
     EMBEDDING_MODEL_LIMITS,
     get_model_token_limit,
@@ -293,6 +292,7 @@ class TestLMStudioHybridDiscovery:
         get_model_token_limit() should return the dynamically discovered
         context length without falling back to the registry.
         """
+
         # Mock _query_lmstudio_context_limit to return successful SDK query
         def mock_query_lmstudio(model_name, base_url):
             # Verify WebSocket URL was passed (not HTTP)
@@ -308,8 +308,7 @@ class TestLMStudioHybridDiscovery:
 
         # Test with HTTP URL that should be converted to WebSocket
         limit = get_model_token_limit(
-            model_name="custom-model",
-            base_url="http://localhost:1234/v1"
+            model_name="custom-model", base_url="http://localhost:1234/v1"
         )
 
         assert limit == 8192, "Should return limit from LM Studio SDK query"
@@ -320,6 +319,7 @@ class TestLMStudioHybridDiscovery:
         When LM Studio SDK query fails (returns None), get_model_token_limit()
         should fall back to the EMBEDDING_MODEL_LIMITS registry.
         """
+
         # Mock _query_lmstudio_context_limit to return None (SDK failure)
         def mock_query_lmstudio(model_name, base_url):
             return None  # SDK query failed
@@ -331,14 +331,11 @@ class TestLMStudioHybridDiscovery:
 
         # Test with known model that exists in registry
         limit = get_model_token_limit(
-            model_name="nomic-embed-text",
-            base_url="http://localhost:1234/v1"
+            model_name="nomic-embed-text", base_url="http://localhost:1234/v1"
         )
 
         # Should fall back to registry value
-        assert limit == 2048, (
-            "Should fall back to registry when SDK returns None"
-        )
+        assert limit == 2048, "Should fall back to registry when SDK returns None"
 
     def test_get_model_token_limit_lmstudio_port_detection(self, monkeypatch):
         """Verify detection of LM Studio via port 1234.
@@ -359,18 +356,18 @@ class TestLMStudioHybridDiscovery:
         )
 
         # Test with port 1234 (default LM Studio port)
-        limit = get_model_token_limit(
-            model_name="test-model",
-            base_url="http://127.0.0.1:1234/v1"
-        )
+        limit = get_model_token_limit(model_name="test-model", base_url="http://127.0.0.1:1234/v1")
 
         assert query_called, "Should detect port 1234 and call LM Studio SDK query"
         assert limit == 4096, "Should return SDK query result"
 
-    @pytest.mark.parametrize("test_url,expected_limit,keyword", [
-        ("http://lmstudio.local:8080/v1", 16384, "lmstudio"),
-        ("http://api.lm.studio:5000/v1", 32768, "lm.studio"),
-    ])
+    @pytest.mark.parametrize(
+        "test_url,expected_limit,keyword",
+        [
+            ("http://lmstudio.local:8080/v1", 16384, "lmstudio"),
+            ("http://api.lm.studio:5000/v1", 32768, "lm.studio"),
+        ],
+    )
     def test_get_model_token_limit_lmstudio_url_keyword_detection(
         self, monkeypatch, test_url, expected_limit, keyword
     ):
@@ -391,18 +388,18 @@ class TestLMStudioHybridDiscovery:
             mock_query_lmstudio,
         )
 
-        limit = get_model_token_limit(
-            model_name="test-model",
-            base_url=test_url
-        )
+        limit = get_model_token_limit(model_name="test-model", base_url=test_url)
 
         assert query_called, f"Should detect '{keyword}' keyword and call SDK query"
         assert limit == expected_limit, f"Should return SDK query result for {keyword}"
 
-    @pytest.mark.parametrize("input_url,expected_protocol,expected_host", [
-        ("http://localhost:1234/v1", "ws://", "localhost:1234"),
-        ("https://lmstudio.example.com:1234/v1", "wss://", "lmstudio.example.com:1234"),
-    ])
+    @pytest.mark.parametrize(
+        "input_url,expected_protocol,expected_host",
+        [
+            ("http://localhost:1234/v1", "ws://", "localhost:1234"),
+            ("https://lmstudio.example.com:1234/v1", "wss://", "lmstudio.example.com:1234"),
+        ],
+    )
     def test_get_model_token_limit_protocol_conversion(
         self, monkeypatch, input_url, expected_protocol, expected_host
     ):
@@ -425,10 +422,7 @@ class TestLMStudioHybridDiscovery:
             mock_query_lmstudio,
         )
 
-        get_model_token_limit(
-            model_name="test-model",
-            base_url=input_url
-        )
+        get_model_token_limit(model_name="test-model", base_url=input_url)
 
         # Verify conversion happened
         assert len(conversions_tested) == 1, "Should have called SDK query once"
@@ -474,14 +468,11 @@ class TestLMStudioHybridDiscovery:
 
         # Test with Ollama URL
         limit = get_model_token_limit(
-            model_name="test-model",
-            base_url="http://localhost:11434/api"
+            model_name="test-model", base_url="http://localhost:11434/api"
         )
 
         assert ollama_called, "Should attempt Ollama query first"
-        assert not lmstudio_called, (
-            "Should not attempt LM Studio query when Ollama succeeds"
-        )
+        assert not lmstudio_called, "Should not attempt LM Studio query when Ollama succeeds"
         assert limit == 2048, "Should return Ollama result"
 
     def test_get_model_token_limit_lmstudio_not_detected_for_non_lmstudio_urls(self, monkeypatch):
@@ -511,13 +502,8 @@ class TestLMStudioHybridDiscovery:
 
         for base_url in test_cases:
             lmstudio_called = False  # Reset for each test
-            get_model_token_limit(
-                model_name="nomic-embed-text",
-                base_url=base_url
-            )
-            assert not lmstudio_called, (
-                f"Should NOT call LM Studio SDK for URL: {base_url}"
-            )
+            get_model_token_limit(model_name="nomic-embed-text", base_url=base_url)
+            assert not lmstudio_called, f"Should NOT call LM Studio SDK for URL: {base_url}"
 
     def test_get_model_token_limit_lmstudio_case_insensitive_detection(self, monkeypatch):
         """Verify LM Studio detection is case-insensitive for keywords.
@@ -547,10 +533,7 @@ class TestLMStudioHybridDiscovery:
 
         for base_url in test_cases:
             query_called = False  # Reset for each test
-            limit = get_model_token_limit(
-                model_name="test-model",
-                base_url=base_url
-            )
+            limit = get_model_token_limit(model_name="test-model", base_url=base_url)
             assert query_called, f"Should detect LM Studio in URL: {base_url}"
             assert limit == 8192, f"Should return SDK result for URL: {base_url}"
 
@@ -570,6 +553,7 @@ class TestTokenLimitCaching:
     def setup_method(self):
         """Clear cache before each test."""
         from leann.embedding_compute import _token_limit_cache
+
         _token_limit_cache.clear()
 
     def test_registry_lookup_is_cached(self):
@@ -657,5 +641,3 @@ class TestTokenLimitCaching:
         cache_key = ("nomic-embed-text:latest", "http://localhost:11434")
         assert cache_key in _token_limit_cache
         assert _token_limit_cache[cache_key] == 2048
-
-

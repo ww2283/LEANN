@@ -8,8 +8,8 @@ These tests verify that:
 4. Default behavior (no flag) is handled correctly
 """
 
-import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
+
 from leann.cli import LeannCLI
 
 
@@ -24,11 +24,19 @@ class TestCLIPromptTemplateArgument:
 
         # Test build command
         build_args = parser.parse_args(
-            ["build", "test-index", "--docs", "/tmp/test-docs", "--embedding-prompt-template", template_value]
+            [
+                "build",
+                "test-index",
+                "--docs",
+                "/tmp/test-docs",
+                "--embedding-prompt-template",
+                template_value,
+            ]
         )
         assert build_args.command == "build"
-        assert hasattr(build_args, "embedding_prompt_template"), \
+        assert hasattr(build_args, "embedding_prompt_template"), (
             "build command should have embedding_prompt_template attribute"
+        )
         assert build_args.embedding_prompt_template == template_value
 
         # Test search command
@@ -36,8 +44,9 @@ class TestCLIPromptTemplateArgument:
             ["search", "test-index", "my query", "--embedding-prompt-template", template_value]
         )
         assert search_args.command == "search"
-        assert hasattr(search_args, "embedding_prompt_template"), \
+        assert hasattr(search_args, "embedding_prompt_template"), (
             "search command should have embedding_prompt_template attribute"
+        )
         assert search_args.embedding_prompt_template == template_value
 
     def test_commands_default_to_none(self):
@@ -47,17 +56,21 @@ class TestCLIPromptTemplateArgument:
 
         # Test build command default
         build_args = parser.parse_args(["build", "test-index", "--docs", "/tmp/test-docs"])
-        assert hasattr(build_args, "embedding_prompt_template"), \
+        assert hasattr(build_args, "embedding_prompt_template"), (
             "build command should have embedding_prompt_template attribute"
-        assert build_args.embedding_prompt_template is None, \
+        )
+        assert build_args.embedding_prompt_template is None, (
             "Build default value should be None when flag not provided"
+        )
 
         # Test search command default
         search_args = parser.parse_args(["search", "test-index", "my query"])
-        assert hasattr(search_args, "embedding_prompt_template"), \
+        assert hasattr(search_args, "embedding_prompt_template"), (
             "search command should have embedding_prompt_template attribute"
-        assert search_args.embedding_prompt_template is None, \
+        )
+        assert search_args.embedding_prompt_template is None, (
             "Search default value should be None when flag not provided"
+        )
 
 
 class TestBuildCommandPromptTemplateArgumentExtras:
@@ -74,12 +87,16 @@ class TestBuildCommandPromptTemplateArgumentExtras:
         parser = cli.create_parser()
 
         template = "Represent this sentence for searching: "
-        args = parser.parse_args([
-            "build",
-            "test-index",
-            "--docs", "/tmp/test-docs",
-            "--embedding-prompt-template", template
-        ])
+        args = parser.parse_args(
+            [
+                "build",
+                "test-index",
+                "--docs",
+                "/tmp/test-docs",
+                "--embedding-prompt-template",
+                template,
+            ]
+        )
 
         assert args.embedding_prompt_template == template
 
@@ -106,42 +123,45 @@ class TestPromptTemplateStoredInEmbeddingOptions:
         cli = LeannCLI()
 
         # Mock load_documents to return a document so builder is created
-        cli.load_documents = Mock(return_value=[
-            {"text": "test content", "metadata": {}}
-        ])
+        cli.load_documents = Mock(return_value=[{"text": "test content", "metadata": {}}])
 
         parser = cli.create_parser()
 
         template = "search_query: "
-        args = parser.parse_args([
-            "build",
-            "test-index",
-            "--docs", str(tmp_path),
-            "--embedding-prompt-template", template,
-            "--force"  # Force rebuild to ensure LeannBuilder is called
-        ])
+        args = parser.parse_args(
+            [
+                "build",
+                "test-index",
+                "--docs",
+                str(tmp_path),
+                "--embedding-prompt-template",
+                template,
+                "--force",  # Force rebuild to ensure LeannBuilder is called
+            ]
+        )
 
         # Run the build command
         import asyncio
+
         asyncio.run(cli.build_index(args))
 
         # Check that LeannBuilder was called with embedding_options containing prompt_template
         call_kwargs = mock_builder_class.call_args.kwargs
-        assert "embedding_options" in call_kwargs, \
-            "LeannBuilder should receive embedding_options"
+        assert "embedding_options" in call_kwargs, "LeannBuilder should receive embedding_options"
 
         embedding_options = call_kwargs["embedding_options"]
-        assert embedding_options is not None, \
+        assert embedding_options is not None, (
             "embedding_options should not be None when template provided"
-        assert "prompt_template" in embedding_options, \
+        )
+        assert "prompt_template" in embedding_options, (
             "embedding_options should contain 'prompt_template' key"
-        assert embedding_options["prompt_template"] == template, \
+        )
+        assert embedding_options["prompt_template"] == template, (
             f"Template should be '{template}', got {embedding_options.get('prompt_template')}"
+        )
 
     @patch("leann.cli.LeannBuilder")
-    def test_prompt_template_not_in_options_when_not_provided(
-        self, mock_builder_class, tmp_path
-    ):
+    def test_prompt_template_not_in_options_when_not_provided(self, mock_builder_class, tmp_path):
         """
         Verify that when --embedding-prompt-template is NOT provided,
         embedding_options either doesn't have the key or it's None.
@@ -155,36 +175,37 @@ class TestPromptTemplateStoredInEmbeddingOptions:
         cli = LeannCLI()
 
         # Mock load_documents to return a document so builder is created
-        cli.load_documents = Mock(return_value=[
-            {"text": "test content", "metadata": {}}
-        ])
+        cli.load_documents = Mock(return_value=[{"text": "test content", "metadata": {}}])
 
         parser = cli.create_parser()
 
-        args = parser.parse_args([
-            "build",
-            "test-index",
-            "--docs", str(tmp_path),
-            "--force"  # Force rebuild to ensure LeannBuilder is called
-        ])
+        args = parser.parse_args(
+            [
+                "build",
+                "test-index",
+                "--docs",
+                str(tmp_path),
+                "--force",  # Force rebuild to ensure LeannBuilder is called
+            ]
+        )
 
         import asyncio
+
         asyncio.run(cli.build_index(args))
 
         # Check that if embedding_options is passed, it doesn't have prompt_template
         call_kwargs = mock_builder_class.call_args.kwargs
-        if "embedding_options" in call_kwargs and call_kwargs["embedding_options"]:
+        if call_kwargs.get("embedding_options"):
             embedding_options = call_kwargs["embedding_options"]
             # Either the key shouldn't exist, or it should be None
-            assert "prompt_template" not in embedding_options or \
-                   embedding_options["prompt_template"] is None, \
-                   "prompt_template should not be set when flag not provided"
+            assert (
+                "prompt_template" not in embedding_options
+                or embedding_options["prompt_template"] is None
+            ), "prompt_template should not be set when flag not provided"
 
     # R1 Tests: Build-time separate template storage
     @patch("leann.cli.LeannBuilder")
-    def test_build_stores_separate_templates(
-        self, mock_builder_class, tmp_path
-    ):
+    def test_build_stores_separate_templates(self, mock_builder_class, tmp_path):
         """
         R1 Test 1: Verify that when both --embedding-prompt-template and
         --query-prompt-template are provided to build command, both values
@@ -209,54 +230,61 @@ class TestPromptTemplateStoredInEmbeddingOptions:
         cli = LeannCLI()
 
         # Mock load_documents to return a document so builder is created
-        cli.load_documents = Mock(return_value=[
-            {"text": "test content", "metadata": {}}
-        ])
+        cli.load_documents = Mock(return_value=[{"text": "test content", "metadata": {}}])
 
         parser = cli.create_parser()
 
         build_template = "doc: "
         query_template = "query: "
-        args = parser.parse_args([
-            "build",
-            "test-index",
-            "--docs", str(tmp_path),
-            "--embedding-prompt-template", build_template,
-            "--query-prompt-template", query_template,
-            "--force"
-        ])
+        args = parser.parse_args(
+            [
+                "build",
+                "test-index",
+                "--docs",
+                str(tmp_path),
+                "--embedding-prompt-template",
+                build_template,
+                "--query-prompt-template",
+                query_template,
+                "--force",
+            ]
+        )
 
         # Run the build command
         import asyncio
+
         asyncio.run(cli.build_index(args))
 
         # Check that LeannBuilder was called with separate template keys
         call_kwargs = mock_builder_class.call_args.kwargs
-        assert "embedding_options" in call_kwargs, \
-            "LeannBuilder should receive embedding_options"
+        assert "embedding_options" in call_kwargs, "LeannBuilder should receive embedding_options"
 
         embedding_options = call_kwargs["embedding_options"]
-        assert embedding_options is not None, \
+        assert embedding_options is not None, (
             "embedding_options should not be None when templates provided"
+        )
 
-        assert "build_prompt_template" in embedding_options, \
+        assert "build_prompt_template" in embedding_options, (
             "embedding_options should contain 'build_prompt_template' key"
-        assert embedding_options["build_prompt_template"] == build_template, \
+        )
+        assert embedding_options["build_prompt_template"] == build_template, (
             f"build_prompt_template should be '{build_template}'"
+        )
 
-        assert "query_prompt_template" in embedding_options, \
+        assert "query_prompt_template" in embedding_options, (
             "embedding_options should contain 'query_prompt_template' key"
-        assert embedding_options["query_prompt_template"] == query_template, \
+        )
+        assert embedding_options["query_prompt_template"] == query_template, (
             f"query_prompt_template should be '{query_template}'"
+        )
 
         # Old key should NOT be present when using new separate template format
-        assert "prompt_template" not in embedding_options, \
+        assert "prompt_template" not in embedding_options, (
             "Old 'prompt_template' key should not be present with separate templates"
+        )
 
     @patch("leann.cli.LeannBuilder")
-    def test_build_backward_compat_single_template(
-        self, mock_builder_class, tmp_path
-    ):
+    def test_build_backward_compat_single_template(self, mock_builder_class, tmp_path):
         """
         R1 Test 2: Verify backward compatibility - when only
         --embedding-prompt-template is provided (old behavior), it should
@@ -279,49 +307,54 @@ class TestPromptTemplateStoredInEmbeddingOptions:
         cli = LeannCLI()
 
         # Mock load_documents to return a document so builder is created
-        cli.load_documents = Mock(return_value=[
-            {"text": "test content", "metadata": {}}
-        ])
+        cli.load_documents = Mock(return_value=[{"text": "test content", "metadata": {}}])
 
         parser = cli.create_parser()
 
         template = "prompt: "
-        args = parser.parse_args([
-            "build",
-            "test-index",
-            "--docs", str(tmp_path),
-            "--embedding-prompt-template", template,
-            "--force"
-        ])
+        args = parser.parse_args(
+            [
+                "build",
+                "test-index",
+                "--docs",
+                str(tmp_path),
+                "--embedding-prompt-template",
+                template,
+                "--force",
+            ]
+        )
 
         # Run the build command
         import asyncio
+
         asyncio.run(cli.build_index(args))
 
         # Check that LeannBuilder was called with old format
         call_kwargs = mock_builder_class.call_args.kwargs
-        assert "embedding_options" in call_kwargs, \
-            "LeannBuilder should receive embedding_options"
+        assert "embedding_options" in call_kwargs, "LeannBuilder should receive embedding_options"
 
         embedding_options = call_kwargs["embedding_options"]
-        assert embedding_options is not None, \
+        assert embedding_options is not None, (
             "embedding_options should not be None when template provided"
+        )
 
-        assert "prompt_template" in embedding_options, \
+        assert "prompt_template" in embedding_options, (
             "embedding_options should contain old 'prompt_template' key for backward compat"
-        assert embedding_options["prompt_template"] == template, \
+        )
+        assert embedding_options["prompt_template"] == template, (
             f"prompt_template should be '{template}'"
+        )
 
         # New keys should NOT be present in backward compat mode
-        assert "build_prompt_template" not in embedding_options, \
+        assert "build_prompt_template" not in embedding_options, (
             "build_prompt_template should not be present with single template flag"
-        assert "query_prompt_template" not in embedding_options, \
+        )
+        assert "query_prompt_template" not in embedding_options, (
             "query_prompt_template should not be present with single template flag"
+        )
 
     @patch("leann.cli.LeannBuilder")
-    def test_build_no_templates(
-        self, mock_builder_class, tmp_path
-    ):
+    def test_build_no_templates(self, mock_builder_class, tmp_path):
         """
         R1 Test 3: Verify that when no template flags are provided,
         embedding_options has no prompt template keys.
@@ -343,35 +376,32 @@ class TestPromptTemplateStoredInEmbeddingOptions:
         cli = LeannCLI()
 
         # Mock load_documents to return a document so builder is created
-        cli.load_documents = Mock(return_value=[
-            {"text": "test content", "metadata": {}}
-        ])
+        cli.load_documents = Mock(return_value=[{"text": "test content", "metadata": {}}])
 
         parser = cli.create_parser()
 
-        args = parser.parse_args([
-            "build",
-            "test-index",
-            "--docs", str(tmp_path),
-            "--force"
-        ])
+        args = parser.parse_args(["build", "test-index", "--docs", str(tmp_path), "--force"])
 
         # Run the build command
         import asyncio
+
         asyncio.run(cli.build_index(args))
 
         # Check that no template keys are present
         call_kwargs = mock_builder_class.call_args.kwargs
-        if "embedding_options" in call_kwargs and call_kwargs["embedding_options"]:
+        if call_kwargs.get("embedding_options"):
             embedding_options = call_kwargs["embedding_options"]
 
             # None of the template keys should be present
-            assert "prompt_template" not in embedding_options, \
+            assert "prompt_template" not in embedding_options, (
                 "prompt_template should not be present when no flags provided"
-            assert "build_prompt_template" not in embedding_options, \
+            )
+            assert "build_prompt_template" not in embedding_options, (
                 "build_prompt_template should not be present when no flags provided"
-            assert "query_prompt_template" not in embedding_options, \
+            )
+            assert "query_prompt_template" not in embedding_options, (
                 "query_prompt_template should not be present when no flags provided"
+            )
 
 
 class TestPromptTemplateFlowsToComputeEmbeddings:
@@ -395,48 +425,54 @@ class TestPromptTemplateFlowsToComputeEmbeddings:
         """
         # Mock compute_embeddings to return dummy embeddings as numpy array
         import numpy as np
+
         mock_compute_embeddings.return_value = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
 
         # Use real LeannBuilder (not mocked) to test the actual flow
         cli = LeannCLI()
 
         # Mock load_documents to return a simple document
-        cli.load_documents = Mock(return_value=[
-            {"text": "test content", "metadata": {}}
-        ])
+        cli.load_documents = Mock(return_value=[{"text": "test content", "metadata": {}}])
 
         parser = cli.create_parser()
 
         template = "search_document: "
-        args = parser.parse_args([
-            "build",
-            "test-index",
-            "--docs", str(tmp_path),
-            "--embedding-prompt-template", template,
-            "--backend-name", "hnsw",  # Use hnsw backend
-            "--force"  # Force rebuild to ensure index is created
-        ])
+        args = parser.parse_args(
+            [
+                "build",
+                "test-index",
+                "--docs",
+                str(tmp_path),
+                "--embedding-prompt-template",
+                template,
+                "--backend-name",
+                "hnsw",  # Use hnsw backend
+                "--force",  # Force rebuild to ensure index is created
+            ]
+        )
 
         # This should fail because the flow isn't implemented yet
         import asyncio
+
         asyncio.run(cli.build_index(args))
 
         # Verify compute_embeddings was called with provider_options containing prompt_template
-        assert mock_compute_embeddings.called, \
-            "compute_embeddings should have been called"
+        assert mock_compute_embeddings.called, "compute_embeddings should have been called"
 
         # Check the call arguments
         call_kwargs = mock_compute_embeddings.call_args.kwargs
-        assert "provider_options" in call_kwargs, \
+        assert "provider_options" in call_kwargs, (
             "compute_embeddings should receive provider_options parameter"
+        )
 
         provider_options = call_kwargs["provider_options"]
-        assert provider_options is not None, \
-            "provider_options should not be None"
-        assert "prompt_template" in provider_options, \
+        assert provider_options is not None, "provider_options should not be None"
+        assert "prompt_template" in provider_options, (
             "provider_options should contain prompt_template key"
-        assert provider_options["prompt_template"] == template, \
+        )
+        assert provider_options["prompt_template"] == template, (
             f"Template should be '{template}', got {provider_options.get('prompt_template')}"
+        )
 
 
 class TestPromptTemplateArgumentHelp:
@@ -455,7 +491,6 @@ class TestPromptTemplateArgumentHelp:
         # This is a bit tricky - we need to parse to get the help
         # We'll check that the help includes relevant keywords
         import io
-        import sys
         from contextlib import redirect_stdout
 
         f = io.StringIO()
@@ -466,12 +501,14 @@ class TestPromptTemplateArgumentHelp:
             pass  # --help causes sys.exit(0)
 
         help_text = f.getvalue()
-        assert "--embedding-prompt-template" in help_text, \
+        assert "--embedding-prompt-template" in help_text, (
             "Help text should mention --embedding-prompt-template"
+        )
         # Check for keywords that should be in the help
         help_lower = help_text.lower()
-        assert any(keyword in help_lower for keyword in ["template", "prompt", "prepend"]), \
+        assert any(keyword in help_lower for keyword in ["template", "prompt", "prepend"]), (
             "Help text should explain what the prompt template does"
+        )
 
     def test_search_command_prompt_template_has_help_text(self):
         """
@@ -481,7 +518,6 @@ class TestPromptTemplateArgumentHelp:
         parser = cli.create_parser()
 
         import io
-        import sys
         from contextlib import redirect_stdout
 
         f = io.StringIO()
@@ -492,5 +528,6 @@ class TestPromptTemplateArgumentHelp:
             pass  # --help causes sys.exit(0)
 
         help_text = f.getvalue()
-        assert "--embedding-prompt-template" in help_text, \
+        assert "--embedding-prompt-template" in help_text, (
             "Search help text should mention --embedding-prompt-template"
+        )

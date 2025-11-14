@@ -24,7 +24,6 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
-
 from leann.api import LeannBuilder, LeannSearcher
 
 
@@ -79,7 +78,7 @@ class TestPromptTemplateMetadataPersistence:
         assert meta_path.exists(), ".meta.json file should be created during build"
 
         # Read and parse metadata
-        with open(meta_path, "r", encoding="utf-8") as f:
+        with open(meta_path, encoding="utf-8") as f:
             meta_data = json.load(f)
 
         # Verify embedding_options exists in metadata
@@ -124,7 +123,7 @@ class TestPromptTemplateMetadataPersistence:
         meta_path = temp_index_dir / "test_no_template.leann.meta.json"
         assert meta_path.exists()
 
-        with open(meta_path, "r", encoding="utf-8") as f:
+        with open(meta_path, encoding="utf-8") as f:
             meta_data = json.load(f)
 
         # If embedding_options exists, it should not contain prompt_template
@@ -156,9 +155,7 @@ class TestPromptTemplateAutoLoadOnSearch:
             mock_compute.return_value = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
             yield mock_compute
 
-    def test_search_without_template_in_metadata(
-        self, temp_index_dir, mock_embeddings
-    ):
+    def test_search_without_template_in_metadata(self, temp_index_dir, mock_embeddings):
         """
         Verify that searching an index built WITHOUT a prompt template
         works correctly (backward compatibility).
@@ -237,7 +234,7 @@ class TestQueryPromptTemplateAutoLoad:
             embedding_mode="openai",
             embedding_options={
                 "build_prompt_template": "doc: ",
-                "query_prompt_template": "query: "
+                "query_prompt_template": "query: ",
             },
         )
         builder.add_text("Test document")
@@ -250,10 +247,10 @@ class TestQueryPromptTemplateAutoLoad:
         searcher = LeannSearcher(index_path=str(index_path))
 
         # Mock the backend search to avoid actual search
-        with patch.object(searcher.backend_impl, 'search') as mock_backend_search:
+        with patch.object(searcher.backend_impl, "search") as mock_backend_search:
             mock_backend_search.return_value = {
-                'labels': [['test_id_0']],  # IDs (nested list for batch support)
-                'distances': [[0.9]]  # Distances (nested list for batch support)
+                "labels": [["test_id_0"]],  # IDs (nested list for batch support)
+                "distances": [[0.9]],  # Distances (nested list for batch support)
             }
 
             searcher.search("my query", top_k=1, recompute_embeddings=False)
@@ -267,8 +264,7 @@ class TestQueryPromptTemplateAutoLoad:
 
         assert len(texts_arg) == 1, "Should compute embedding for one query"
         assert texts_arg[0] == "query: my query", (
-            f"Query template should be applied: expected 'query: my query', "
-            f"got '{texts_arg[0]}'"
+            f"Query template should be applied: expected 'query: my query', got '{texts_arg[0]}'"
         )
 
     def test_search_backward_compat_single_template(self, temp_index_dir, mock_compute_embeddings):
@@ -303,11 +299,8 @@ class TestQueryPromptTemplateAutoLoad:
         # Act: Search
         searcher = LeannSearcher(index_path=str(index_path))
 
-        with patch.object(searcher.backend_impl, 'search') as mock_backend_search:
-            mock_backend_search.return_value = {
-                'labels': [['test_id_0']],
-                'distances': [[0.9]]
-            }
+        with patch.object(searcher.backend_impl, "search") as mock_backend_search:
+            mock_backend_search.return_value = {"labels": [["test_id_0"]], "distances": [[0.9]]}
 
             searcher.search("my query", top_k=1, recompute_embeddings=False)
 
@@ -352,11 +345,8 @@ class TestQueryPromptTemplateAutoLoad:
         # Act: Search
         searcher = LeannSearcher(index_path=str(index_path))
 
-        with patch.object(searcher.backend_impl, 'search') as mock_backend_search:
-            mock_backend_search.return_value = {
-                'labels': [['test_id_0']],
-                'distances': [[0.9]]
-            }
+        with patch.object(searcher.backend_impl, "search") as mock_backend_search:
+            mock_backend_search.return_value = {"labels": [["test_id_0"]], "distances": [[0.9]]}
 
             searcher.search("my query", top_k=1, recompute_embeddings=False)
 
@@ -393,7 +383,7 @@ class TestQueryPromptTemplateAutoLoad:
             embedding_mode="openai",
             embedding_options={
                 "build_prompt_template": "doc: ",
-                "query_prompt_template": "query: "
+                "query_prompt_template": "query: ",
             },
         )
         builder.add_text("Test document")
@@ -405,18 +395,15 @@ class TestQueryPromptTemplateAutoLoad:
         # Act: Search with override
         searcher = LeannSearcher(index_path=str(index_path))
 
-        with patch.object(searcher.backend_impl, 'search') as mock_backend_search:
-            mock_backend_search.return_value = {
-                'labels': [['test_id_0']],
-                'distances': [[0.9]]
-            }
+        with patch.object(searcher.backend_impl, "search") as mock_backend_search:
+            mock_backend_search.return_value = {"labels": [["test_id_0"]], "distances": [[0.9]]}
 
             # This should accept provider_options parameter
             searcher.search(
                 "test",
                 top_k=1,
                 recompute_embeddings=False,
-                provider_options={"prompt_template": "override: "}
+                provider_options={"prompt_template": "override: "},
             )
 
         # Assert: Override template was applied
@@ -472,6 +459,7 @@ class TestPromptTemplateReuseInChat:
 
         return str(index_path), template
 
+
 class TestPromptTemplateIntegrationWithEmbeddingModes:
     """Tests for prompt template compatibility with different embedding modes."""
 
@@ -481,11 +469,19 @@ class TestPromptTemplateIntegrationWithEmbeddingModes:
         with tempfile.TemporaryDirectory() as tmpdir:
             yield Path(tmpdir)
 
-    @pytest.mark.parametrize("mode,model,template,filename_prefix", [
-        ("openai", "text-embedding-3-small", "Represent this for searching: ", "openai_template"),
-        ("ollama", "nomic-embed-text", "search_query: ", "ollama_template"),
-        ("sentence-transformers", "facebook/contriever", "query: ", "st_template"),
-    ])
+    @pytest.mark.parametrize(
+        "mode,model,template,filename_prefix",
+        [
+            (
+                "openai",
+                "text-embedding-3-small",
+                "Represent this for searching: ",
+                "openai_template",
+            ),
+            ("ollama", "nomic-embed-text", "search_query: ", "ollama_template"),
+            ("sentence-transformers", "facebook/contriever", "query: ", "st_template"),
+        ],
+    )
     def test_prompt_template_metadata_with_embedding_modes(
         self, temp_index_dir, mode, model, template, filename_prefix
     ):
@@ -515,7 +511,7 @@ class TestPromptTemplateIntegrationWithEmbeddingModes:
 
             # Verify metadata
             meta_path = temp_index_dir / f"{filename_prefix}.leann.meta.json"
-            with open(meta_path, "r", encoding="utf-8") as f:
+            with open(meta_path, encoding="utf-8") as f:
                 meta_data = json.load(f)
 
             assert meta_data["embedding_mode"] == mode
@@ -699,7 +695,7 @@ class TestQueryTemplateApplicationInComputeEmbedding:
         with patch(
             "leann.embedding_compute.compute_embeddings", side_effect=mock_compute_embeddings
         ):
-            result = searcher.compute_query_embedding(
+            searcher.compute_query_embedding(
                 query="vector database",
                 use_server_if_available=False,
                 query_template=None,  # No template
@@ -802,7 +798,7 @@ class TestQueryTemplateApplicationInComputeEmbedding:
         with patch(
             "leann.embedding_compute.compute_embeddings", side_effect=mock_compute_embeddings
         ):
-            result = searcher.compute_query_embedding(
+            searcher.compute_query_embedding(
                 query="vector database",
                 use_server_if_available=False,
                 query_template="",  # Empty string
