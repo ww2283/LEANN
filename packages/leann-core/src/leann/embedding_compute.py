@@ -741,9 +741,8 @@ def compute_embeddings_openai(
 
     # Apply prompt template if provided
     # Priority: build_prompt_template (new format) > prompt_template (old format)
-    prompt_template = (
-        provider_options.get("build_prompt_template")
-        or provider_options.get("prompt_template")
+    prompt_template = provider_options.get("build_prompt_template") or provider_options.get(
+        "prompt_template"
     )
 
     if prompt_template:
@@ -1036,9 +1035,8 @@ def compute_embeddings_ollama(
     # Apply prompt template if provided
     provider_options = provider_options or {}
     # Priority: build_prompt_template (new format) > prompt_template (old format)
-    prompt_template = (
-        provider_options.get("build_prompt_template")
-        or provider_options.get("prompt_template")
+    prompt_template = provider_options.get("build_prompt_template") or provider_options.get(
+        "prompt_template"
     )
 
     if prompt_template:

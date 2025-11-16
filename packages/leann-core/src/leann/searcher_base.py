@@ -75,7 +75,8 @@ class BaseSearcher(LeannBackendSearcherInterface, ABC):
         # Templates are applied in compute_query_embedding (line 109-110) BEFORE server call
         # The server should never apply templates during search to avoid double-templating
         search_provider_options = {
-            k: v for k, v in self.embedding_options.items()
+            k: v
+            for k, v in self.embedding_options.items()
             if k not in ("build_prompt_template", "query_prompt_template", "prompt_template")
         }
 
