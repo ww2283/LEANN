@@ -1545,6 +1545,11 @@ Examples:
                         print("Invalid input. Aborting search.")
                         return
 
+        # Build provider_options for runtime override
+        provider_options = {}
+        if args.embedding_prompt_template:
+            provider_options["prompt_template"] = args.embedding_prompt_template
+
         searcher = LeannSearcher(index_path=index_path)
         results = searcher.search(
             query,
@@ -1554,6 +1559,7 @@ Examples:
             prune_ratio=args.prune_ratio,
             recompute_embeddings=args.recompute_embeddings,
             pruning_strategy=args.pruning_strategy,
+            provider_options=provider_options if provider_options else None,
         )
 
         print(f"Search results for '{query}' (top {len(results)}):")
