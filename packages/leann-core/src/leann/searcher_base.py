@@ -71,6 +71,14 @@ class BaseSearcher(LeannBackendSearcherInterface, ABC):
             or "mips"
         )
 
+        # Filter out ALL prompt templates from provider_options during search
+        # Templates are applied in compute_query_embedding (line 109-110) BEFORE server call
+        # The server should never apply templates during search to avoid double-templating
+        search_provider_options = {
+            k: v for k, v in self.embedding_options.items()
+            if k not in ("build_prompt_template", "query_prompt_template", "prompt_template")
+        }
+
         server_started, actual_port = self.embedding_server_manager.start_server(
             port=port,
             model_name=self.embedding_model,
@@ -78,7 +86,7 @@ class BaseSearcher(LeannBackendSearcherInterface, ABC):
             passages_file=passages_source_file,
             distance_metric=distance_metric,
             enable_warmup=kwargs.get("enable_warmup", False),
-            provider_options=self.embedding_options,
+            provider_options=search_provider_options,
         )
         if not server_started:
             raise RuntimeError(f"Failed to start embedding server on port {actual_port}")
