@@ -203,7 +203,7 @@ leann build --docs $(git ls-files | grep -Ev '\.(png|jpg|jpeg|gif|yml|yaml|sh|pd
 **Important Notes:**
 - **Only use with compatible models**: EmbeddingGemma and similar task-specific models
 - **NOT for regular models**: Adding prompts to models like `nomic-embed-text`, `text-embedding-3-small`, or `bge-base-en-v1.5` will corrupt embeddings
-- **Template is saved**: Build-time templates are saved to `.meta.json` for reference; you can add both `--embedding-prompt-template` and `--embedding-prompt-template` values during building phase, and this way the mcp query will automatically pick up the query template
+- **Template is saved**: Build-time templates are saved to `.meta.json` for reference; you can add both `--embedding-prompt-template` and `--query-prompt-template` values during building phase, and this way the mcp query will automatically pick up the query template
 - **Flexible prompts**: You can use any prompt string, or leave it empty (`""`)
 
 **Python API:**
