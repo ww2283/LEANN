@@ -2540,7 +2540,7 @@ Examples:
             json_results = [
                 {
                     "id": r.id,
-                    "score": r.score,
+                    "score": float(r.score),
                     "text": r.text,
                     "metadata": r.metadata,
                 }
