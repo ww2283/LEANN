@@ -481,6 +481,9 @@ def compute_embeddings_sentence_transformers(
             torch.backends.cudnn.deterministic = False
             torch.cuda.set_per_process_memory_fraction(0.9)
         elif device == "mps":
+            # No device-level init for MPS. set_per_process_memory_fraction causes
+            # greedy allocation; torch.compile causes graph buffer bloat. Cache
+            # clearing is handled per-batch in the compute loop below.
             pass
         elif device == "cpu":
             # TODO: Haven't tested this yet
@@ -711,7 +714,10 @@ def compute_embeddings_sentence_transformers(
                 batch_embeddings = pooled.detach().to("cpu").float().numpy()
                 all_embeddings.append(batch_embeddings)
                 if device == "mps":
-                    torch.mps.empty_cache()
+                    try:
+                        torch.mps.empty_cache()
+                    except (RuntimeError, AttributeError):
+                        pass
 
         embeddings = np.vstack(all_embeddings).astype(np.float32, copy=False)
         try:

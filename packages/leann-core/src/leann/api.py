@@ -1462,11 +1462,33 @@ class LeannSearcher:
         index = Fts5BM25Index(str(db_path))
         passages = []
         for passage_file in self.passage_manager.passage_files.values():
-            with open(passage_file, encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        passages.append(json.loads(line))
-        index.fit(passages)
+            try:
+                with open(passage_file, encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                passages.append(json.loads(line))
+                            except json.JSONDecodeError as exc:
+                                logger.warning(f"Skipping malformed JSONL in {passage_file}: {exc}")
+            except FileNotFoundError:
+                logger.warning(f"Passage file missing: {passage_file}")
+
+        if not passages:
+            logger.error(
+                "No passages found for on-demand BM25 index. "
+                "BM25/hybrid search will return empty results. "
+                "Re-run 'leann build' to regenerate passage files."
+            )
+
+        try:
+            index.fit(passages)
+        except (PermissionError, OSError) as exc:
+            logger.error(
+                f"Cannot write BM25 index to {db_path}: {exc}. "
+                f"Ensure the index directory is writable, or rebuild with prebuild_bm25=True."
+            )
+            return
+
         self.bm25_scorer = index
         logger.info(f"Built FTS5 BM25 index on-demand at {db_path}")
 
