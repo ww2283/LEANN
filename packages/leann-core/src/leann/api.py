@@ -298,8 +298,6 @@ class BM25Index(ABC):
         """
 
 
-
-
 class Fts5BM25Index(BM25Index):
     """BM25 over a SQLite FTS5 virtual table, persisted on disk.
 
@@ -381,9 +379,7 @@ class LeannBuilder:
         **backend_kwargs,
     ):
         if bm25_backend != "fts5":
-            logger.warning(
-                f"bm25_backend={bm25_backend!r} is deprecated; using 'fts5'."
-            )
+            logger.warning(f"bm25_backend={bm25_backend!r} is deprecated; using 'fts5'.")
             bm25_backend = "fts5"
         self.bm25_backend = bm25_backend
         self.prebuild_bm25 = prebuild_bm25 or bm25_backend == "fts5"
@@ -623,7 +619,6 @@ class LeannBuilder:
         index.fit(self.chunks)
         index.close()
         logger.info(f"Wrote BM25 FTS5 index to {db_path}")
-
 
     def build_index_from_arrays(self, index_path: str, ids: list, embeddings: np.ndarray):
         """Build an index from pre-computed embedding arrays.
