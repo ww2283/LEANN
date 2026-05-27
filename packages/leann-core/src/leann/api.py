@@ -1474,6 +1474,7 @@ class LeannSearcher:
                 "BM25/hybrid search will return empty results. "
                 "Re-run 'leann build' to regenerate passage files."
             )
+            return
 
         try:
             index.fit(passages)
