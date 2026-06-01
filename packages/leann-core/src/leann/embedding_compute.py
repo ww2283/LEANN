@@ -481,11 +481,10 @@ def compute_embeddings_sentence_transformers(
             torch.backends.cudnn.deterministic = False
             torch.cuda.set_per_process_memory_fraction(0.9)
         elif device == "mps":
-            try:
-                if hasattr(torch.mps, "set_per_process_memory_fraction"):
-                    torch.mps.set_per_process_memory_fraction(0.9)
-            except AttributeError:
-                logger.warning("Some MPS optimizations not available in this PyTorch version")
+            # No device-level init for MPS. set_per_process_memory_fraction causes
+            # greedy allocation; torch.compile causes graph buffer bloat. Cache
+            # clearing is handled per-batch in the compute loop below.
+            pass
         elif device == "cpu":
             # TODO: Haven't tested this yet
             torch.set_num_threads(min(8, os.cpu_count() or 4))
@@ -586,7 +585,7 @@ def compute_embeddings_sentence_transformers(
                 logger.warning(f"FP16 optimization failed: {e}")
 
         # Apply torch.compile optimization
-        if device in ["cuda", "mps"]:
+        if device == "cuda":
             try:
                 model = torch.compile(model, mode="reduce-overhead", dynamic=True)
                 logger.info(f"Applied torch.compile optimization: {model_name}")
@@ -659,7 +658,7 @@ def compute_embeddings_sentence_transformers(
 
             hf_model.eval()
             # Optional compile on supported devices
-            if device in ["cuda", "mps"]:
+            if device == "cuda":
                 try:
                     hf_model = torch.compile(hf_model, mode="reduce-overhead", dynamic=True)
                     logger.info(
@@ -714,6 +713,11 @@ def compute_embeddings_sentence_transformers(
                     pooled = masked.sum(dim=1) / lengths
                 batch_embeddings = pooled.detach().to("cpu").float().numpy()
                 all_embeddings.append(batch_embeddings)
+                if device == "mps":
+                    try:
+                        torch.mps.empty_cache()
+                    except (RuntimeError, AttributeError):
+                        pass
 
         embeddings = np.vstack(all_embeddings).astype(np.float32, copy=False)
         try:
