@@ -16,7 +16,7 @@ from llama_index.core import SimpleDirectoryReader
 from llama_index.core.node_parser import SentenceSplitter
 from tqdm import tqdm
 
-from .api import LeannBuilder, LeannChat, LeannSearcher
+from .api import Fts5BM25Index, LeannBuilder, LeannChat, LeannSearcher
 from .embedding_server_manager import EmbeddingServerManager
 from .interactive_utils import create_cli_session
 from .registry import register_project_directory
@@ -347,6 +347,16 @@ Examples:
             default=True,
             help="Fall back to traditional chunking if AST chunking fails (default: True)",
         )
+        build_parser.add_argument(
+            "--id-scheme",
+            choices=["sequential", "content-hash"],
+            default="sequential",
+            help=(
+                "How passage IDs are assigned. 'sequential' (default) keys by insertion "
+                "order; 'content-hash' uses sha256(text)[:16], stable across file moves "
+                "and reorderings. See #329."
+            ),
+        )
 
         # Watch command
         watch_parser = subparsers.add_parser(
@@ -369,6 +379,26 @@ Examples:
             "--dry-run",
             action="store_true",
             help="Report changes without rebuilding (original watch behavior)",
+        )
+
+        migrate_parser = subparsers.add_parser(
+            "migrate-ids",
+            help=(
+                "Rewrite an existing index's passage IDs to content-hash form. "
+                "Irreversible; back up the index first."
+            ),
+        )
+        migrate_parser.add_argument("index_name", help="Index name")
+        migrate_parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Show what would change without writing anything.",
+        )
+        migrate_parser.add_argument(
+            "-y",
+            "--yes",
+            action="store_true",
+            help="Skip the interactive confirmation prompt.",
         )
 
         # Search command
@@ -1880,7 +1910,32 @@ Examples:
             in paths
         ]
 
+    def _existing_index_id_scheme(self, index_path: str) -> Optional[str]:
+        """Return the passage_id_scheme recorded in an existing index's meta.json.
+
+        Returns None when the index doesn't exist yet or the field isn't
+        recorded (older indexes pre-#330). Callers should treat None as
+        "fall back to whatever the args say or the default".
+        """
+        meta_path = Path(index_path).with_suffix(".leann.meta.json")
+        if not meta_path.exists():
+            return None
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                return json.load(f).get("passage_id_scheme")
+        except Exception:
+            return None
+
     def _make_incremental_builder(self, args) -> "LeannBuilder":
+        # For incremental updates, the existing index's scheme wins. Otherwise
+        # IDs would mix schemes within one index, which breaks lookups.
+        existing_scheme = self._existing_index_id_scheme(self.get_index_path(args.index_name))
+        scheme = existing_scheme or getattr(args, "id_scheme", "sequential")
+        if existing_scheme and getattr(args, "id_scheme", existing_scheme) != existing_scheme:
+            print(
+                f"Note: --id-scheme={args.id_scheme} ignored — index '{args.index_name}' "
+                f"was built with passage_id_scheme={existing_scheme!r}, keeping that."
+            )
         return LeannBuilder(
             backend_name=args.backend_name,
             embedding_model=args.embedding_model,
@@ -1891,6 +1946,7 @@ Examples:
             is_compact=args.compact,
             is_recompute=args.recompute,
             num_threads=args.num_threads,
+            passage_id_scheme=scheme,
         )
 
     def _incremental_add_only(
@@ -2384,6 +2440,7 @@ Examples:
             is_compact=args.compact,
             is_recompute=args.recompute,
             num_threads=args.num_threads,
+            passage_id_scheme=getattr(args, "id_scheme", "sequential"),
         )
 
         for chunk in all_texts:
@@ -2503,6 +2560,150 @@ Examples:
 
         build_args = parser.parse_args(build_args_list)
         await self.build_index(build_args)
+
+    def migrate_ids(self, args) -> None:
+        """Rewrite an existing index's passage IDs to content-hash form.
+
+        Migration is purely a Python-side rewrite — the vector graph isn't
+        touched, so FAISS labels stay valid. What gets rewritten:
+          - <index>.passages.jsonl  : new IDs in each line's "id" field
+          - <index>.passages.idx    : new offset map keyed by new IDs
+          - <index>.ids.txt         : new label → ID mapping for FAISS
+          - <index>.meta.json       : passage_id_scheme = "content-hash"
+          - <index>.bm25.sqlite     : BM25 IDs, when an FTS5 artifact is configured
+
+        Identical-text chunks collide on the same sha256 prefix; the later
+        occurrence wins in the offset map (dedup). A `--preserve-duplicates`
+        knob to suffix collisions can land separately.
+
+        Irreversible. Prompts for confirmation unless --yes is passed.
+        """
+        import hashlib
+        import shutil
+
+        index_name = args.index_name
+        index_path = self._resolve_index_path(index_name, purpose="migrate")
+        if not index_path:
+            return
+        meta_path = Path(index_path).with_suffix(".leann.meta.json")
+        if not meta_path.exists():
+            print(f"Cannot migrate '{index_name}': metadata missing at {meta_path}.")
+            return
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+        current_scheme = meta.get("passage_id_scheme", "sequential")
+        if current_scheme == "content-hash":
+            print(f"Index '{index_name}' already uses content-hash IDs. Nothing to do.")
+            return
+
+        # Locate the sibling artifacts using the same conventions as build_index.
+        index_dir = Path(index_path).parent
+        index_base = Path(index_path).name
+        passages_file = index_dir / f"{index_base}.passages.jsonl"
+        offset_file = index_dir / f"{index_base}.passages.idx"
+        base_no_leann = (
+            index_base[: -len(".leann")] if index_base.endswith(".leann") else index_base
+        )
+        idmap_file = index_dir / f"{base_no_leann}.ids.txt"
+
+        for p in (passages_file, offset_file):
+            if not p.exists():
+                print(f"Cannot migrate: required artifact missing at {p}.")
+                return
+
+        # Stream the passages to plan the rewrite and surface collision count
+        # before committing to anything irreversible.
+        old_ids: list[str] = []
+        new_ids: list[str] = []
+        with open(passages_file, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                data = json.loads(line)
+                old_ids.append(data["id"])
+                new_ids.append(hashlib.sha256(data["text"].encode("utf-8")).hexdigest()[:16])
+
+        unique_new = len(set(new_ids))
+        collisions = len(new_ids) - unique_new
+        print(
+            f"Migrating '{index_name}': {len(new_ids)} passages → {unique_new} unique "
+            f"content-hash IDs ({collisions} collision(s) will dedup)."
+        )
+
+        if args.dry_run:
+            print("(dry-run; not writing anything)")
+            return
+        if not args.yes:
+            confirm = input(
+                "Proceed? This rewrites passages.jsonl, .idx, .ids.txt, .meta.json. [y/N] "
+            )
+            if confirm.strip().lower() not in ("y", "yes"):
+                print("Aborted.")
+                return
+
+        # Stage writes into siblings, then atomically rename.
+        new_passages = passages_file.with_suffix(passages_file.suffix + ".migrate")
+        new_offsets: dict[str, int] = {}
+        rewritten_passages: list[dict[str, Any]] = []
+        with (
+            open(passages_file, encoding="utf-8") as src,
+            open(new_passages, "w", encoding="utf-8") as dst,
+        ):
+            idx = 0
+            for line in src:
+                if not line.strip():
+                    continue
+                data = json.loads(line)
+                data["id"] = new_ids[idx]
+                offset = dst.tell()
+                json.dump(data, dst, ensure_ascii=False)
+                dst.write("\n")
+                new_offsets[new_ids[idx]] = offset
+                rewritten_passages.append(data)
+                idx += 1
+
+        new_idx = offset_file.with_suffix(offset_file.suffix + ".migrate")
+        with open(new_idx, "wb") as f:
+            pickle.dump(new_offsets, f)
+
+        new_idmap: Optional[Path] = None
+        if idmap_file.exists():
+            new_idmap = idmap_file.with_suffix(idmap_file.suffix + ".migrate")
+            with open(new_idmap, "w", encoding="utf-8") as f:
+                for nid in new_ids:
+                    f.write(nid + "\n")
+
+        bm25_db_name = meta.get("bm25_db")
+        should_rebuild_bm25 = meta.get("bm25_backend") == "fts5"
+        if should_rebuild_bm25 and not bm25_db_name:
+            bm25_db_name = f"{index_base}.bm25.sqlite"
+        new_bm25: Optional[Path] = None
+        bm25_file: Optional[Path] = None
+        if should_rebuild_bm25 and bm25_db_name:
+            bm25_file = index_dir / bm25_db_name
+            new_bm25 = bm25_file.with_suffix(bm25_file.suffix + ".migrate")
+            bm25_index = Fts5BM25Index(str(new_bm25))
+            bm25_index.fit(rewritten_passages)
+            bm25_index.close()
+
+        shutil.move(str(new_passages), str(passages_file))
+        shutil.move(str(new_idx), str(offset_file))
+        if new_idmap is not None:
+            shutil.move(str(new_idmap), str(idmap_file))
+        if new_bm25 is not None and bm25_file is not None:
+            shutil.move(str(new_bm25), str(bm25_file))
+
+        meta["passage_id_scheme"] = "content-hash"
+        meta["version"] = "1.1"
+        if should_rebuild_bm25 and bm25_db_name:
+            meta["bm25_backend"] = "fts5"
+            meta["bm25_db"] = bm25_db_name
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
+        print(
+            f"✓ Migrated '{index_name}' to content-hash IDs. {collisions} collisions were deduped."
+        )
 
     async def watch_index(self, args):
         index_name = args.index_name
@@ -3228,6 +3429,8 @@ Examples:
                 await self.build_index(args)
         elif args.command == "watch":
             await self.watch_index(args)
+        elif args.command == "migrate-ids":
+            self.migrate_ids(args)
         elif args.command == "search":
             with suppress_cpp_output(suppress):
                 await self.search_documents(args)

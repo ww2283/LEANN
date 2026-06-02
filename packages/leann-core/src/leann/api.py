@@ -30,6 +30,15 @@ from .registry import BACKEND_REGISTRY
 
 logger = logging.getLogger(__name__)
 
+# Passage ID schemes recorded in <index>.meta.json["passage_id_scheme"].
+# - "sequential": today's default; IDs are str(insertion_index) (api.py:add_text).
+# - "content-hash": planned in #329; IDs are sha256(text)[:16], stable across
+#   file moves and reorderings.
+# Older indexes have no passage_id_scheme field — readers must default to
+# "sequential" when the key is absent. See #329 for the rollout plan.
+PASSAGE_ID_SCHEME_SEQUENTIAL = "sequential"
+PASSAGE_ID_SCHEME_CONTENT_HASH = "content-hash"
+
 
 def get_registered_backends() -> list[str]:
     """Get list of registered backend names."""
@@ -376,6 +385,7 @@ class LeannBuilder:
         embedding_options: Optional[dict[str, Any]] = None,
         prebuild_bm25: bool = False,
         bm25_backend: str = "fts5",
+        passage_id_scheme: str = PASSAGE_ID_SCHEME_SEQUENTIAL,
         **backend_kwargs,
     ):
         if bm25_backend != "fts5":
@@ -383,6 +393,16 @@ class LeannBuilder:
             bm25_backend = "fts5"
         self.bm25_backend = bm25_backend
         self.prebuild_bm25 = prebuild_bm25 or bm25_backend == "fts5"
+        if passage_id_scheme not in (
+            PASSAGE_ID_SCHEME_SEQUENTIAL,
+            PASSAGE_ID_SCHEME_CONTENT_HASH,
+        ):
+            raise ValueError(
+                f"Unknown passage_id_scheme: {passage_id_scheme!r}. "
+                f"Expected one of: {PASSAGE_ID_SCHEME_SEQUENTIAL!r}, "
+                f"{PASSAGE_ID_SCHEME_CONTENT_HASH!r}."
+            )
+        self.passage_id_scheme = passage_id_scheme
         self.backend_name = backend_name
         # Normalize incompatible combinations early (for consistent metadata)
         if backend_name == "hnsw":
@@ -477,10 +497,23 @@ class LeannBuilder:
         self.backend_kwargs = backend_kwargs
         self.chunks: list[dict[str, Any]] = []
 
+    def _generate_passage_id(self, text: str) -> str:
+        """Generate a passage ID per the configured scheme.
+
+        sequential: str(insertion index) — fast, position-dependent, current default.
+        content-hash: sha256(text)[:16] — content-stable, dedup-friendly across
+        file moves and reorderings. See #329 for the design.
+        """
+        if self.passage_id_scheme == PASSAGE_ID_SCHEME_CONTENT_HASH:
+            import hashlib
+
+            return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        return str(len(self.chunks))
+
     def add_text(self, text: str, metadata: Optional[dict[str, Any]] = None):
         if metadata is None:
             metadata = {}
-        passage_id = metadata.get("id", str(len(self.chunks)))
+        passage_id = metadata.get("id") or self._generate_passage_id(text)
         chunk_data = {"id": passage_id, "text": text, "metadata": metadata}
         self.chunks.append(chunk_data)
 
@@ -570,12 +603,13 @@ class LeannBuilder:
         builder_instance.build(embeddings, string_ids, index_path, **current_backend_kwargs)
         leann_meta_path = index_dir / f"{index_name}.meta.json"
         meta_data = {
-            "version": "1.0",
+            "version": "1.1",
             "backend_name": self.backend_name,
             "embedding_model": self.embedding_model,
             "dimensions": self.dimensions,
             "backend_kwargs": self.backend_kwargs,
             "embedding_mode": self.embedding_mode,
+            "passage_id_scheme": self.passage_id_scheme,
             "passage_sources": [
                 {
                     "type": "jsonl",
@@ -714,12 +748,13 @@ class LeannBuilder:
         # Create metadata file
         leann_meta_path = index_dir / f"{index_name}.meta.json"
         meta_data = {
-            "version": "1.0",
+            "version": "1.1",
             "backend_name": self.backend_name,
             "embedding_model": self.embedding_model,
             "dimensions": self.dimensions,
             "backend_kwargs": self.backend_kwargs,
             "embedding_mode": self.embedding_mode,
+            "passage_id_scheme": self.passage_id_scheme,
             "passage_sources": [
                 {
                     "type": "jsonl",
@@ -1176,6 +1211,12 @@ class LeannSearcher:
             index_path, **final_kwargs
         )
         self.bm25_scorer: Optional[BM25Index] = None
+
+        # Surface the index's passage ID scheme so callers can introspect.
+        # Older indexes (pre-#330) don't record this field — they're sequential.
+        self.passage_id_scheme: str = self.meta_data.get(
+            "passage_id_scheme", PASSAGE_ID_SCHEME_SEQUENTIAL
+        )
 
         # Optional one-shot warmup at construction time to hide cold-start latency.
         if self._warmup:
