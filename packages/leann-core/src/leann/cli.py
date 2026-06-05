@@ -1913,16 +1913,16 @@ Examples:
     def _existing_index_id_scheme(self, index_path: str) -> Optional[str]:
         """Return the passage_id_scheme recorded in an existing index's meta.json.
 
-        Returns None when the index doesn't exist yet or the field isn't
-        recorded (older indexes pre-#330). Callers should treat None as
-        "fall back to whatever the args say or the default".
+        Returns None when the index doesn't exist yet. Older indexes pre-#330
+        have a meta file without passage_id_scheme and must be treated as
+        sequential so incremental updates never mix ID schemes.
         """
         meta_path = Path(index_path).with_suffix(".leann.meta.json")
         if not meta_path.exists():
             return None
         try:
             with open(meta_path, encoding="utf-8") as f:
-                return json.load(f).get("passage_id_scheme")
+                return json.load(f).get("passage_id_scheme", "sequential")
         except Exception:
             return None
 

@@ -24,6 +24,25 @@ def test_builder_content_hash_passage_ids_are_content_stable():
     assert builder.chunks[2]["id"] == _content_id("different text")
 
 
+def test_existing_index_id_scheme_treats_legacy_meta_as_sequential(tmp_path):
+    cli = LeannCLI()
+    index_path = tmp_path / "legacy.leann"
+
+    assert cli._existing_index_id_scheme(str(index_path)) is None
+
+    meta_path = tmp_path / "legacy.leann.meta.json"
+    meta_path.write_text(json.dumps({"version": "1.0", "backend_name": "hnsw"}), encoding="utf-8")
+
+    assert cli._existing_index_id_scheme(str(index_path)) == "sequential"
+
+    meta_path.write_text(
+        json.dumps({"version": "1.1", "backend_name": "hnsw", "passage_id_scheme": "content-hash"}),
+        encoding="utf-8",
+    )
+
+    assert cli._existing_index_id_scheme(str(index_path)) == "content-hash"
+
+
 def test_migrate_ids_rewrites_passages_offsets_idmap_meta_and_bm25(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     index_dir = tmp_path / ".leann" / "indexes" / "sample"
