@@ -29,6 +29,28 @@ from .settings import (
 from .sync import FileSynchronizer
 
 
+def _default_embedding_model() -> str:
+    """Pick a sensible default embedding model based on platform.
+
+    | Platform   | Default model                                  |
+    |------------|------------------------------------------------|
+    | NVIDIA GPU | BAAI/bge-base-en-v1.5                          |
+    | macOS      | sentence-transformers/all-MiniLM-L6-v2         |
+    | Other/CPU  | sentence-transformers/all-MiniLM-L6-v2         |
+    """
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "BAAI/bge-base-en-v1.5"
+    except ImportError:
+        pass
+
+    # macOS (MPS or CPU) and all other platforms: lightweight model
+    return "sentence-transformers/all-MiniLM-L6-v2"
+
+
 def _normalize_path(path: str) -> str:
     """Return absolute path string for consistent keys."""
     if not path:
@@ -209,11 +231,12 @@ Examples:
             choices=["hnsw", "diskann", "ivf"],
             help="Backend to use (default: hnsw)",
         )
+        _default_model = _default_embedding_model()
         build_parser.add_argument(
             "--embedding-model",
             type=str,
-            default="facebook/contriever",
-            help="Embedding model (default: facebook/contriever)",
+            default=_default_model,
+            help=f"Embedding model (default: {_default_model})",
         )
         build_parser.add_argument(
             "--embedding-mode",
@@ -2139,8 +2162,15 @@ Examples:
                 is_compact = meta.get(
                     "is_compact", meta.get("backend_kwargs", {}).get("is_compact", True)
                 )
+
+                # Normalize model names for comparison — e.g. "all-MiniLM-L6-v2"
+                # should match "sentence-transformers/all-MiniLM-L6-v2"
+                def _normalize_model_name(name: str) -> str:
+                    return name.rsplit("/", 1)[-1] if name else name
+
                 same_embedding = (
-                    meta.get("embedding_model") == args.embedding_model
+                    _normalize_model_name(meta.get("embedding_model", ""))
+                    == _normalize_model_name(args.embedding_model)
                     and meta.get("embedding_mode") == args.embedding_mode
                 )
 
@@ -2241,6 +2271,11 @@ Examples:
 
                 else:
                     self._log_rebuild_reason(meta, args, new_paths, removed_paths, modified_paths)
+                    # Force full reload — the partial all_texts from incremental
+                    # path only contains changed files, not the full corpus.
+                    all_texts = self.load_documents(
+                        docs_paths, args.file_types, include_hidden=args.include_hidden, args=args
+                    )
 
         # Full rebuild: load documents if not already loaded (first build or force)
         try:

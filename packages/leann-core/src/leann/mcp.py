@@ -208,6 +208,26 @@ def handle_build(request_id, args):
     if args.get("force", False):
         cmd.append("--force")
 
+    # Auto-detect embedding model from existing index to ensure incremental
+    # updates use the same model (avoids mismatch with CLI default).
+    if index_name:
+        import json as _json
+        from pathlib import Path
+
+        meta_path = Path.cwd() / ".leann" / "indexes" / index_name / "documents.leann.meta.json"
+        if meta_path.exists():
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    meta = _json.load(f)
+                existing_model = meta.get("embedding_model")
+                existing_mode = meta.get("embedding_mode")
+                if existing_model:
+                    cmd.extend([f"--embedding-model={existing_model}"])
+                if existing_mode:
+                    cmd.extend([f"--embedding-mode={existing_mode}"])
+            except (OSError, ValueError):
+                pass
+
     rc, stdout, stderr = _run_leann(*cmd, timeout=600)
 
     if rc != 0:
