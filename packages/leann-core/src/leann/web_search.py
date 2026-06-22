@@ -15,7 +15,7 @@ class WebSearcher:
         self.api_key = api_key or os.getenv("SERPER_API_KEY")
         self.jina_api_key = jina_api_key or os.getenv("JINA_API_KEY")
         if not self.api_key:
-            logger.warning("No SERPER_API_KEY found. Web seach will fail")
+            logger.warning("No SERPER_API_KEY found. Web search will not be available.")
 
     def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         if not self.api_key:
@@ -45,15 +45,12 @@ class WebSearcher:
             return results
         except Exception as e:
             logger.error(f"Web search failed: {e}")
-            return [{"title": "Error", "link": "", "snippet": f"Web Search failed:{e!s}"}]
+            return [{"title": "Error", "link": "", "snippet": f"Web search failed: {e!s}"}]
 
     def get_page_content(self, url: str) -> str:
-        """
-        Fetch page content using Jina AI (https://jina.ai/reader).
-        """
+        """Fetch page content using Jina AI Reader (https://jina.ai/reader)."""
         jina_url = f"https://r.jina.ai/{url}"
 
-        # Use Jina API key if available for higher limits, but works without it
         headers = {"X-Return-Format": "markdown"}
         if self.jina_api_key:
             headers["Authorization"] = f"Bearer {self.jina_api_key}"

@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
 
+import argparse
 import json
 import subprocess
 import sys
+
+_base_dir: str | None = None
+
+
+def _leann_cmd() -> list[str]:
+    """Build the base command for invoking ``leann`` CLI.
+
+    Using ``sys.executable -m leann`` guarantees we find the CLI even when
+    the ``leann`` console-script is not on PATH (common on Windows when
+    launched by mcp-proxy or other service wrappers).
+    """
+    return [sys.executable, "-m", "leann"]
 
 
 def _run_leann(*args, timeout=120):
@@ -353,6 +366,17 @@ def handle_request(request):
 
 
 def main():
+    global _base_dir
+
+    parser = argparse.ArgumentParser(description="LEANN MCP server (stdio)")
+    parser.add_argument(
+        "--base-dir",
+        help="Base directory where LEANN indexes are located. "
+        "The leann CLI will run with this as its working directory.",
+    )
+    cli_args = parser.parse_args()
+    _base_dir = cli_args.base_dir
+
     for line in sys.stdin:
         try:
             request = json.loads(line.strip())
