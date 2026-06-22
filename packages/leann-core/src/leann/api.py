@@ -379,7 +379,7 @@ class LeannBuilder:
     def __init__(
         self,
         backend_name: str,
-        embedding_model: str = "facebook/contriever",
+        embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
         dimensions: Optional[int] = None,
         embedding_mode: str = "sentence-transformers",
         embedding_options: Optional[dict[str, Any]] = None,
