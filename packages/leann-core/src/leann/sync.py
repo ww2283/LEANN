@@ -293,8 +293,10 @@ class FileSynchronizer:
     def save_snapshot(self):
         assert self.tree is not None
 
-        with open(self.snapshot_path, "wb") as f:
+        tmp_path = f"{self.snapshot_path}.tmp"
+        with open(tmp_path, "wb") as f:
             pickle.dump(self.tree, f)
+        os.replace(tmp_path, self.snapshot_path)
 
     def load_snapshot(self):
         try:

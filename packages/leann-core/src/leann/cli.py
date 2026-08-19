@@ -2311,8 +2311,10 @@ Examples:
             config["sync_key"] = sync_key
         if build_config is not None:
             config["build_config"] = build_config
-        with open(sync_config_path, "w", encoding="utf-8") as f:
+        tmp_path = sync_config_path.with_suffix(sync_config_path.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
+        os.replace(tmp_path, sync_config_path)
 
     def _write_sync_config_for_docs(
         self,
@@ -2605,6 +2607,8 @@ Examples:
                 # Proceed even when all_texts is empty (e.g. file emptied): we still need to remove old chunks
                 if not all_texts and not (modified_paths or removed_paths):
                     print("No documents found")
+                    self._commit_synchronizers(synchronizers)
+                    self._write_sync_config_for_docs(index_dir, docs_paths, args, build_config)
                     return
 
                 if can_ivf_update and (new_paths or modified_paths or removed_paths):
