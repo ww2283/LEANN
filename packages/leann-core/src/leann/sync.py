@@ -60,6 +60,10 @@ DEFAULT_INDEX_EXTENSIONS: list[str] = [
 ]
 
 
+class SnapshotCorruptError(Exception):
+    """Raised when a sync snapshot exists but cannot be unpickled."""
+
+
 def hash_data(data: str | bytes):
     if isinstance(data, str):
         data = data.encode()
@@ -189,7 +193,7 @@ class FileSynchronizer:
         self.explicit_files = (
             [str(Path(path).resolve()) for path in explicit_files] if explicit_files else []
         )
-        if self.root_dir is None and not self.explicit_files:
+        if self.root_dir is None and not self.explicit_files and snapshot_path is None:
             raise ValueError("FileSynchronizer requires root_dir and/or explicit_files")
         if self.root_dir is not None and not os.path.isdir(self.root_dir):
             raise ValueError("This is not a valid directory")
@@ -298,3 +302,5 @@ class FileSynchronizer:
                 self.tree = pickle.load(f)
         except FileNotFoundError:
             self.tree = None
+        except Exception as exc:
+            raise SnapshotCorruptError(f"Corrupt sync snapshot at {self.snapshot_path}") from exc

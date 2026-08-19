@@ -28,7 +28,12 @@ from .settings import (
     resolve_openai_api_key,
     resolve_openai_base_url,
 )
-from .sync import DEFAULT_INDEX_EXTENSIONS, FileSynchronizer, parse_include_extensions
+from .sync import (
+    DEFAULT_INDEX_EXTENSIONS,
+    FileSynchronizer,
+    _iter_directory_files,
+    parse_include_extensions,
+)
 
 
 def _default_embedding_model() -> str:
@@ -337,6 +342,12 @@ Examples:
             "-f",
             action="store_true",
             help="Force full rebuild of existing index (without this, build does incremental update: add new files only)",
+        )
+        build_parser.add_argument(
+            "--sync-key",
+            type=str,
+            default=None,
+            help="Stable identity key for change tracking: one global snapshot keyed by this value, independent of the exact --docs invocation",
         )
         build_parser.add_argument(
             "--graph-degree", type=int, default=32, help="Graph degree (default: 32)"
@@ -1912,8 +1923,23 @@ Examples:
         explicit_files: list[str],
         include_extensions: list[str],
         include_hidden: bool = False,
+        sync_key: Optional[str] = None,
     ) -> list[FileSynchronizer]:
         """Create FileSynchronizers with snapshots stored in the index dir. Shared by build and watch."""
+        if sync_key:
+            manifest = list(explicit_files)
+            for root in directories:
+                manifest.extend(_iter_directory_files(root, include_extensions, include_hidden))
+            tag = hashlib.sha256(sync_key.encode()).hexdigest()[:12]
+            # Keyed path fails loud (SnapshotCorruptError propagates) — no warn-and-skip.
+            return [
+                FileSynchronizer(
+                    explicit_files=sorted(set(manifest)),
+                    include_extensions=include_extensions,
+                    include_hidden=include_hidden,
+                    snapshot_path=str(index_dir / f"sync_key_{tag}.pickle"),
+                )
+            ]
         synchronizers: list[FileSynchronizer] = []
         for root in directories:
             tag = hashlib.sha256(root.encode()).hexdigest()[:12]
@@ -1949,12 +1975,13 @@ Examples:
         index_dir: Path,
         file_types: Optional[str] = None,
         include_hidden: bool = False,
+        sync_key: Optional[str] = None,
     ) -> list[FileSynchronizer]:
         """Create FileSynchronizers for build from docs_paths."""
         directories, files = self._resolve_sync_scope(docs_paths)
         include_extensions = self._parse_file_types(file_types)
         return self._create_synchronizers(
-            index_dir, directories, files, include_extensions, include_hidden
+            index_dir, directories, files, include_extensions, include_hidden, sync_key=sync_key
         )
 
     def _detect_build_changes(
@@ -2235,6 +2262,7 @@ Examples:
         include_extensions: list[str],
         include_hidden: bool,
         build_config: Optional[dict[str, Any]] = None,
+        sync_key: Optional[str] = None,
     ) -> None:
         sync_config_path = index_dir / "sync_roots.json"
         config = {
@@ -2244,6 +2272,8 @@ Examples:
             "include_extensions": include_extensions,
             "ignore_patterns": self._sync_ignore_patterns(include_hidden),
         }
+        if sync_key:
+            config["sync_key"] = sync_key
         if build_config is not None:
             config["build_config"] = build_config
         with open(sync_config_path, "w", encoding="utf-8") as f:
@@ -2264,6 +2294,7 @@ Examples:
             self._parse_file_types(args.file_types),
             args.include_hidden,
             build_config,
+            sync_key=getattr(args, "sync_key", None),
         )
 
     def _load_sync_scope(self, index_dir: Path) -> tuple[list[str], list[str], list[str], bool]:
@@ -2281,6 +2312,16 @@ Examples:
         include_extensions = config.get("include_extensions") or list(DEFAULT_INDEX_EXTENSIONS)
         include_hidden = config.get("ignore_patterns") is None
         return directories, files, include_extensions, include_hidden
+
+    def _load_stored_sync_key(self, index_dir: Path) -> Optional[str]:
+        sync_config_path = index_dir / "sync_roots.json"
+        if not sync_config_path.exists():
+            return None
+        try:
+            with open(sync_config_path, encoding="utf-8") as f:
+                return json.load(f).get("sync_key")
+        except (json.JSONDecodeError, OSError):
+            return None
 
     def _load_sync_roots(self, index_dir: Path) -> list[str]:
         """Load directory + explicit file paths for chunk ID lookup."""
@@ -2423,11 +2464,25 @@ Examples:
         )
 
         # Detect changes first so we can skip load_documents for remove-only
+        stored_key = self._load_stored_sync_key(index_dir)
+        requested_key = getattr(args, "sync_key", None)
+        if requested_key is None:
+            args.sync_key = stored_key
+        elif stored_key is not None and requested_key != stored_key and not args.force:
+            raise ValueError(
+                f"Index '{index_name}' is keyed with sync key '{stored_key}'; "
+                f"got '{requested_key}'. Use --force to rekey."
+            )
         index_dir.mkdir(parents=True, exist_ok=True)
         synchronizers = self._build_synchronizers(
-            docs_paths, index_dir, file_types=args.file_types, include_hidden=args.include_hidden
+            docs_paths,
+            index_dir,
+            file_types=args.file_types,
+            include_hidden=args.include_hidden,
+            sync_key=args.sync_key,
         )
 
+        all_texts: list[dict] | None = None
         if index_dir.exists() and not args.force and synchronizers:
             meta_path = index_dir / "documents.leann.meta.json"
             new_paths, removed_paths, modified_paths = self._detect_build_changes(synchronizers)
@@ -2513,7 +2568,7 @@ Examples:
                     args=args,
                 )
                 # Proceed even when all_texts is empty (e.g. file emptied): we still need to remove old chunks
-                if not all_texts and not (can_ivf_update and (modified_paths or removed_paths)):
+                if not all_texts and not (modified_paths or removed_paths):
                     print("No documents found")
                     return
 
@@ -2556,9 +2611,7 @@ Examples:
                     )
 
         # Full rebuild: load documents if not already loaded (first build or force)
-        try:
-            _ = all_texts
-        except NameError:
+        if all_texts is None:
             all_texts = self.load_documents(
                 docs_paths, args.file_types, include_hidden=args.include_hidden, args=args
             )
@@ -2598,6 +2651,7 @@ Examples:
                     target_index_dir,
                     file_types=args.file_types,
                     include_hidden=args.include_hidden,
+                    sync_key=args.sync_key,
                 )
                 if publish_from_staging
                 else synchronizers
@@ -2637,6 +2691,7 @@ Examples:
             files,
             include_extensions,
             include_hidden,
+            sync_key=self._load_stored_sync_key(index_dir),
         )
         return self._detect_build_changes(synchronizers)
 
@@ -2699,7 +2754,7 @@ Examples:
             return None
         with open(sync_config_path, encoding="utf-8") as f:
             config = json.load(f)
-        roots = config.get("roots") or []
+        roots = (config.get("roots") or []) + (config.get("files") or [])
         if not roots:
             if verbose:
                 print(f"Cannot rebuild '{index_name}': sync config has no document roots.")
@@ -2774,6 +2829,9 @@ Examples:
             include_hidden = config.get("ignore_patterns") is None
         if include_hidden:
             build_args_list.append("--include-hidden")
+
+        if config.get("sync_key"):
+            build_args_list.extend(["--sync-key", config["sync_key"]])
 
         add_option("--doc-chunk-size", build_config.get("doc_chunk_size"))
         add_option("--doc-chunk-overlap", build_config.get("doc_chunk_overlap"))
