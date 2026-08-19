@@ -2877,9 +2877,8 @@ Examples:
                         findings.append(f"passages.jsonl line {lineno} unparseable: {exc}")
                         continue
                     jsonl_ids.append(pid)
-                    text_hash = hashlib.sha256(
-                        str(record.get("text", "")).encode("utf-8")
-                    ).hexdigest()
+                    text = record.get("text", "")
+                    text_hash = hashlib.sha256(f"{type(text).__name__}:{text}".encode()).hexdigest()
                     if pid in text_hash_by_id:
                         if text_hash_by_id[pid] != text_hash:
                             conflicting_ids.add(pid)
@@ -2887,7 +2886,7 @@ Examples:
                         text_hash_by_id[pid] = text_hash
         except Exception as exc:
             findings.append(f"passages.jsonl unreadable: {exc}")
-        for pid in sorted(conflicting_ids):
+        for pid in sorted(conflicting_ids, key=str):
             findings.append(f"passages.jsonl id {pid!r} appears with different text")
 
         offsets: dict[str, int] = {}

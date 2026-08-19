@@ -3,6 +3,7 @@
 import json
 import pickle
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from leann.cli import LeannCLI
@@ -83,7 +84,7 @@ def _make_ivf_index(tmp_path: Path, passage_ids: list[str]) -> Path:
     return prefix
 
 
-def _make_ivf_index_with_entries(tmp_path: Path, entries: list[tuple[str, str]]) -> Path:
+def _make_ivf_index_with_entries(tmp_path: Path, entries: list[tuple[Any, Any]]) -> Path:
     # Like _make_ivf_index but accepts explicit (pid, text) pairs so a pid may
     # repeat (content-hash id scheme). idx and passage_to_id are last-wins.
     index_dir = tmp_path / ".leann" / "indexes" / "idx"
@@ -395,6 +396,36 @@ def test_verify_fails_on_duplicate_id_with_different_text(tmp_path, monkeypatch,
     # Assert
     assert rc == 1
     assert out.strip()
+
+
+def test_verify_fails_on_duplicate_id_with_type_coerced_text(tmp_path, monkeypatch, capsys):
+    # Arrange: same id, texts 1 (int) vs "1" (str) must count as different text
+    _make_ivf_index_with_entries(tmp_path, [("dup", 1), ("dup", "1")])
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    rc = _run_verify()
+    out = capsys.readouterr().out
+
+    # Assert
+    assert rc == 1
+    assert "different text" in out
+
+
+def test_verify_reports_conflicts_with_heterogeneous_id_types(tmp_path, monkeypatch, capsys):
+    # Arrange: conflicting ids of mixed types (int and str) must not crash sorted()
+    _make_ivf_index_with_entries(
+        tmp_path, [(1, "text a"), (1, "text b"), ("x", "text c"), ("x", "text d")]
+    )
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    rc = _run_verify()
+    out = capsys.readouterr().out
+
+    # Assert
+    assert rc == 1
+    assert "different text" in out
 
 
 def test_verify_fails_when_passage_to_id_label_maps_to_other_pid(tmp_path, monkeypatch):
