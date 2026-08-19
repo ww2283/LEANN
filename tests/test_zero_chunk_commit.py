@@ -233,3 +233,38 @@ def test_swallowed_loader_failure_blocks_snapshot_commit(tmp_path, monkeypatch, 
     # Assert: snapshot not committed, so the failed file is still pending
     assert rc == 0
     assert report["added"] == [str(new_file.resolve())]
+
+
+def test_partial_loader_failure_aborts_before_mutating_index(tmp_path, monkeypatch, capsys):
+    # Arrange: two new files, one loads and one fails — nothing may be committed
+    monkeypatch.chdir(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.txt").write_text("alpha", encoding="utf-8")
+    cli = _wire_cli(monkeypatch)
+    _run_build(cli, _build_args("idx", [str(docs)]))
+    good = docs / "b.txt"
+    bad = docs / "c.txt"
+    good.write_text("beta", encoding="utf-8")
+    bad.write_text("gamma", encoding="utf-8")
+    index_dir = tmp_path / ".leann" / "indexes" / "idx"
+    hashes_before = _index_artifact_hashes(index_dir)
+
+    def partial_failure_load(docs_paths, custom_file_types=None, include_hidden=False, args=None):
+        cli._load_errors = 1  # one file failed with a swallowed warning
+        return [{"text": "beta", "metadata": {"file_path": str(good.resolve())}}]
+
+    monkeypatch.setattr(cli, "load_documents", partial_failure_load)
+
+    # Act
+    with pytest.raises(RuntimeError, match="failed to load"):
+        _run_build(cli, _build_args("idx", [str(docs)]))
+    monkeypatch.setattr(cli, "load_documents", _loading_fake)
+    capsys.readouterr()
+    rc = _run_changes(cli, ["changes", "idx"])
+    report = json.loads(capsys.readouterr().out)
+
+    # Assert: index untouched, both files still pending
+    assert rc == 0
+    assert sorted(report["added"]) == [str(good.resolve()), str(bad.resolve())]
+    assert _index_artifact_hashes(index_dir) == hashes_before

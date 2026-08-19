@@ -180,3 +180,23 @@ class TestUnreadableFileHandling(unittest.TestCase):
             assert removed == []
             assert modified == []
             assert added == []
+
+
+class TestWalkErrorHandling(unittest.TestCase):
+    def test_unreadable_subtree_raises_instead_of_reporting_removals(self):
+        if os.geteuid() == 0:
+            self.skipTest("permission checks are bypassed as root")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sub = root / "sub"
+            sub.mkdir()
+            (sub / "file.txt").write_text("hello", encoding="utf-8")
+            fs = FileSynchronizer(root_dir=temp_dir, auto_load=False)
+            fs.tree = fs.build_merkle_tree(fs.generate_file_hashes())
+
+            sub.chmod(0o000)
+            try:
+                with self.assertRaises(OSError):
+                    fs.detect_changes()
+            finally:
+                sub.chmod(0o755)

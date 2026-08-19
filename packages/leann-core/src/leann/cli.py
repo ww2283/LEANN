@@ -2373,6 +2373,8 @@ Examples:
                 config = json.load(f)
         except (json.JSONDecodeError, OSError):
             return [], [], list(DEFAULT_INDEX_EXTENSIONS), False
+        if not isinstance(config, dict):
+            return [], [], list(DEFAULT_INDEX_EXTENSIONS), False
         directories = config.get("directories") or config.get("roots") or []
         files = config.get("files") or []
         include_extensions = config.get("include_extensions") or list(DEFAULT_INDEX_EXTENSIONS)
@@ -2385,7 +2387,10 @@ Examples:
             return None
         try:
             with open(sync_config_path, encoding="utf-8") as f:
-                return json.load(f).get("sync_key")
+                config = json.load(f)
+            if not isinstance(config, dict):
+                raise json.JSONDecodeError("not a JSON object", "", 0)
+            return config.get("sync_key")
         except (json.JSONDecodeError, OSError) as exc:
             # Treating an unreadable config as "unkeyed" would silently bypass the
             # sync-key mismatch guard and rekey the snapshot identity.
@@ -2641,15 +2646,15 @@ Examples:
                     include_hidden=args.include_hidden,
                     args=args,
                 )
+                if self._load_errors:
+                    # Proceeding would mutate the index (IVF removes old chunks before
+                    # re-insert) and commit the failed files as indexed.
+                    raise RuntimeError(
+                        f"{self._load_errors} path(s) failed to load; incremental update "
+                        f"aborted before modifying the index. Fix the inputs and re-run."
+                    )
                 # Proceed even when all_texts is empty (e.g. file emptied): we still need to remove old chunks
                 if not all_texts and not (modified_paths or removed_paths):
-                    if self._load_errors:
-                        # Committing here would record the failed files as indexed,
-                        # permanently masking the load failure.
-                        raise RuntimeError(
-                            f"No chunks produced and {self._load_errors} path(s) failed to "
-                            f"load; snapshot not committed. Fix the inputs and re-run."
-                        )
                     print("No documents found")
                     self._commit_synchronizers(synchronizers)
                     self._write_sync_config_for_docs(index_dir, docs_paths, args, build_config)
@@ -2782,14 +2787,14 @@ Examples:
     def changes_command(self, args) -> int:
         """Report pending file changes vs the stored snapshot without mutating anything."""
         index_dir = self.indexes_dir / args.index_name
+        if not index_dir.exists():
+            print(f"Error: index '{args.index_name}' not found at {index_dir}", file=sys.stderr)
+            return 1
         if args.docs:
             directories, files = self._resolve_sync_scope(args.docs)
             include_extensions = self._parse_file_types(args.file_types)
             include_hidden = args.include_hidden
         else:
-            if not index_dir.exists():
-                print(f"Error: index '{args.index_name}' not found at {index_dir}", file=sys.stderr)
-                return 1
             directories, files, include_extensions, include_hidden = self._load_sync_scope(
                 index_dir
             )
@@ -2869,8 +2874,12 @@ Examples:
         offsets_ok = False
         try:
             with open(str(prefix) + ".passages.idx", "rb") as f:
-                offsets = pickle.load(f)
-            offsets_ok = True
+                loaded_offsets = pickle.load(f)
+            if isinstance(loaded_offsets, dict):
+                offsets = loaded_offsets
+                offsets_ok = True
+            else:
+                findings.append(f"passages.idx is not a dict (got {type(loaded_offsets).__name__})")
         except Exception as exc:
             findings.append(f"passages.idx unreadable: {exc}")
 
@@ -2898,9 +2907,48 @@ Examples:
         if meta and meta.get("backend_name") == "ivf":
             findings.extend(self._verify_ivf(prefix, offsets if offsets_ok else None))
 
+        findings.extend(self._verify_snapshots(prefix.parent))
+
         for finding in findings:
             print(finding)
         return 1 if findings else 0
+
+    def _verify_snapshots(self, index_dir: Path) -> list[str]:
+        """Check the sync snapshots the recorded scope implies exist and unpickle."""
+        findings: list[str] = []
+        if not (index_dir / "sync_roots.json").exists():
+            return findings
+        try:
+            stored_key = self._load_stored_sync_key(index_dir)
+        except ValueError as exc:
+            return [str(exc)]
+
+        snapshot_paths: list[Path] = []
+        if stored_key:
+            tag = hashlib.sha256(stored_key.encode()).hexdigest()[:12]
+            snapshot_paths.append(index_dir / f"sync_key_{tag}.pickle")
+        else:
+            directories, files, _, _ = self._load_sync_scope(index_dir)
+            for root in directories:
+                tag = hashlib.sha256(root.encode()).hexdigest()[:12]
+                snapshot_paths.append(index_dir / f"sync_{tag}.pickle")
+            if files:
+                tag = hashlib.sha256("|".join(files).encode()).hexdigest()[:12]
+                snapshot_paths.append(index_dir / f"sync_files_{tag}.pickle")
+
+        for snapshot_path in snapshot_paths:
+            if not snapshot_path.exists():
+                findings.append(
+                    f"sync snapshot missing: {snapshot_path.name} "
+                    f"(build may have been interrupted before snapshot commit)"
+                )
+                continue
+            try:
+                with open(snapshot_path, "rb") as f:
+                    pickle.load(f)
+            except Exception as exc:
+                findings.append(f"sync snapshot {snapshot_path.name} corrupt: {exc}")
+        return findings
 
     def _verify_ivf(self, prefix: Path, offsets: Optional[dict[str, int]]) -> list[str]:
         findings: list[str] = []
@@ -2914,6 +2962,11 @@ Examples:
             next_id = id_map["next_id"]
         except Exception as exc:
             return [f"ivf_id_map.json unreadable: {exc}"]
+        if not isinstance(id_to_passage, dict) or not isinstance(passage_to_id, dict):
+            return ["ivf_id_map.json: id_to_passage/passage_to_id are not dicts"]
+        if not isinstance(next_id, int):
+            findings.append(f"ivf_id_map.json: next_id is not an integer (got {next_id!r})")
+            next_id = None
 
         for key in id_to_passage:
             try:
@@ -2928,8 +2981,10 @@ Examples:
                 findings.append(f"id_to_passage[{key!r}]={pid!r} is not inverted in passage_to_id")
         if offsets is not None and set(id_to_passage.values()) != set(offsets):
             findings.append("id_to_passage values do not match passages.idx keys")
-        numeric_ids = [int(k) for k in id_to_passage if k.lstrip("-").isdigit()]
-        if numeric_ids:
+        numeric_ids = [
+            int(k) for k in id_to_passage if isinstance(k, str) and k.lstrip("-").isdigit()
+        ]
+        if numeric_ids and next_id is not None:
             max_id = max(numeric_ids)
             if next_id <= max_id:
                 findings.append(f"next_id {next_id} is not greater than max id {max_id}")
@@ -2948,6 +3003,34 @@ Examples:
                 findings.append(
                     f".index has {index.ntotal} vectors but id map has {len(id_to_passage)}"
                 )
+            # extract_index_ivf instead of isinstance: the index may have been
+            # written by a different faiss build (SWIG classes don't compare).
+            try:
+                ivf_index = faiss.extract_index_ivf(index)
+            except Exception:
+                ivf_index = None
+            if ivf_index is None:
+                findings.append(f".index is not an IVF index (got {type(index).__name__})")
+            else:
+                # faiss does not persist the direct map, so enumerate the stored
+                # ids from the inverted lists (read-only) and check every mapped
+                # id actually exists in the index.
+                invlists = getattr(faiss.downcast_index(index), "invlists", None)
+                if invlists is not None:
+                    stored_ids: set[int] = set()
+                    for list_no in range(ivf_index.nlist):
+                        list_size = invlists.list_size(list_no)
+                        if list_size:
+                            ids_ptr = invlists.get_ids(list_no)
+                            stored_ids.update(
+                                int(x) for x in faiss.rev_swig_ptr(ids_ptr, list_size)
+                            )
+                            invlists.release_ids(list_no, ids_ptr)
+                    missing = [i for i in numeric_ids if i not in stored_ids]
+                    if missing:
+                        findings.append(
+                            f".index is missing {len(missing)} of {len(numeric_ids)} mapped ids"
+                        )
         except Exception as exc:
             findings.append(f".index unreadable: {exc}")
         return findings

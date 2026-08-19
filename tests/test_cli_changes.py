@@ -329,3 +329,20 @@ def test_changes_with_empty_scope_and_no_docs_exits_nonzero(tmp_path, monkeypatc
     assert rc != 0
     assert "sync scope" in captured.err
     assert captured.out.strip() == ""
+
+
+def test_changes_on_missing_index_with_docs_exits_nonzero(tmp_path, monkeypatch, capsys):
+    # Arrange: --docs given but the index itself does not exist (likely a typo)
+    monkeypatch.chdir(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.txt").write_text("alpha", encoding="utf-8")
+    cli = _wire_cli(monkeypatch)
+
+    # Act
+    rc = _run_changes(cli, ["changes", "no-such-index", "--docs", str(docs)])
+    captured = capsys.readouterr()
+
+    # Assert
+    assert rc != 0
+    assert "not found" in captured.err

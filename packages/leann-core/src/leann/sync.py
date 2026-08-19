@@ -101,8 +101,13 @@ def _iter_directory_files(
     if not root.is_dir():
         return []
 
+    def _walk_error(exc: OSError) -> None:
+        # A silently skipped subtree would make its previously indexed files
+        # look removed, deleting their chunks.
+        raise exc
+
     paths: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_walk_error):
         if not include_hidden:
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         current = Path(dirpath)

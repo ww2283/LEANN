@@ -8,17 +8,36 @@ import numpy as np
 from leann.cli import LeannCLI
 
 
-def _write_faiss_index(path: Path, num_vectors: int, dim: int = 4) -> None:
-    from leann_backend_hnsw import faiss
-
-    index = faiss.IndexFlatL2(dim)
-    vectors = np.ascontiguousarray(
-        np.random.default_rng(0).random((num_vectors, dim), dtype=np.float32)
-    )
+def _import_faiss():
+    # Same import order as the IVF backend and verify, so writer and reader
+    # share one SWIG build (mixing builds breaks invlists access).
     try:
-        index.add(vectors)
+        import faiss
+    except ImportError:
+        from leann_backend_hnsw import faiss
+    return faiss
+
+
+def _write_faiss_index(path: Path, num_vectors: int, dim: int = 4) -> None:
+    # Mirror the real IVF backend: IndexIVFFlat + DirectMap.Hashtable with
+    # explicit ids, so verify's type/direct-map checks run against the real shape.
+    faiss = _import_faiss()
+
+    quantizer = faiss.IndexFlatL2(dim)
+    index = faiss.IndexIVFFlat(quantizer, dim, 1, faiss.METRIC_L2)
+    index.set_direct_map_type(faiss.DirectMap.Hashtable)
+    vectors = np.ascontiguousarray(
+        np.random.default_rng(0).random((max(num_vectors, 1), dim), dtype=np.float32)
+    )
+    ids = np.arange(num_vectors, dtype=np.int64)
+    try:
+        index.train(vectors)
+        if num_vectors:
+            index.add_with_ids(vectors[:num_vectors], ids)
     except TypeError:
-        index.add(num_vectors, faiss.swig_ptr(vectors))
+        index.train(vectors.shape[0], faiss.swig_ptr(vectors))
+        if num_vectors:
+            index.add_with_ids(num_vectors, faiss.swig_ptr(vectors), faiss.swig_ptr(ids))
     faiss.write_index(index, str(path))
 
 
@@ -190,3 +209,110 @@ def test_verify_unreadable_idx_does_not_emit_misleading_cross_findings(
     assert "passages.idx unreadable" in out
     assert "do not match passages.idx" not in out
     assert "passages.jsonl has" not in out
+
+
+def test_verify_fails_when_index_is_not_ivf_type(tmp_path, monkeypatch, capsys):
+    # Arrange: replace the IVF index with a flat index (no direct map)
+    faiss = _import_faiss()
+
+    prefix = _make_ivf_index(tmp_path, ["p0", "p1"])
+    flat = faiss.IndexFlatL2(4)
+    vectors = np.ascontiguousarray(np.random.default_rng(0).random((2, 4), dtype=np.float32))
+    try:
+        flat.add(vectors)
+    except TypeError:
+        flat.add(2, faiss.swig_ptr(vectors))
+    faiss.write_index(flat, str(prefix.parent / "documents.index"))
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    rc = _run_verify()
+    out = capsys.readouterr().out
+
+    # Assert
+    assert rc == 1
+    assert "not an IVF index" in out
+
+
+def test_verify_reports_findings_on_malformed_artifact_types(tmp_path, monkeypatch, capsys):
+    # Arrange: decodable but wrong-shaped artifacts must not traceback
+    prefix = _make_ivf_index(tmp_path, ["p0", "p1"])
+    with open(str(prefix) + ".passages.idx", "wb") as f:
+        pickle.dump(["not", "a", "dict"], f)
+    id_map_path = prefix.parent / "documents.ivf_id_map.json"
+    id_map = json.loads(id_map_path.read_text(encoding="utf-8"))
+    id_map["next_id"] = "two"
+    id_map_path.write_text(json.dumps(id_map), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    rc = _run_verify()
+    out = capsys.readouterr().out
+
+    # Assert
+    assert rc == 1
+    assert "passages.idx is not a dict" in out
+    assert "next_id is not an integer" in out
+
+
+def test_verify_flags_missing_snapshot_for_recorded_scope(tmp_path, monkeypatch, capsys):
+    # Arrange: sync_roots.json records a root but the snapshot pickle is absent
+    # (interrupted between index write and snapshot commit)
+    prefix = _make_ivf_index(tmp_path, ["p0", "p1"])
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (prefix.parent / "sync_roots.json").write_text(
+        json.dumps({"directories": [str(docs)], "files": []}), encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    rc = _run_verify()
+    out = capsys.readouterr().out
+
+    # Assert
+    assert rc == 1
+    assert "sync snapshot missing" in out
+
+
+def test_verify_flags_corrupt_snapshot_for_recorded_scope(tmp_path, monkeypatch, capsys):
+    # Arrange
+    import hashlib as _hashlib
+
+    prefix = _make_ivf_index(tmp_path, ["p0", "p1"])
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (prefix.parent / "sync_roots.json").write_text(
+        json.dumps({"directories": [str(docs)], "files": []}), encoding="utf-8"
+    )
+    tag = _hashlib.sha256(str(docs).encode()).hexdigest()[:12]
+    (prefix.parent / f"sync_{tag}.pickle").write_bytes(b"not a pickle")
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    rc = _run_verify()
+    out = capsys.readouterr().out
+
+    # Assert
+    assert rc == 1
+    assert "corrupt" in out
+
+
+def test_verify_flags_mapped_id_absent_from_index_vectors(tmp_path, monkeypatch, capsys):
+    # Arrange: id map references id 5 which the 2-vector index does not contain
+    prefix = _make_ivf_index(tmp_path, ["p0", "p1"])
+    id_map_path = prefix.parent / "documents.ivf_id_map.json"
+    id_map = json.loads(id_map_path.read_text(encoding="utf-8"))
+    id_map["id_to_passage"] = {"0": "p0", "5": "p1"}
+    id_map["passage_to_id"] = {"p0": 0, "p1": 5}
+    id_map["next_id"] = 6
+    id_map_path.write_text(json.dumps(id_map), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    rc = _run_verify()
+    out = capsys.readouterr().out
+
+    # Assert
+    assert rc == 1
+    assert "missing 1 of 2 mapped ids" in out

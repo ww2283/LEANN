@@ -332,3 +332,36 @@ def test_build_fails_loud_on_corrupt_sync_roots_json(tmp_path, monkeypatch):
         )
     )
     assert json.loads(sync_roots.read_text(encoding="utf-8"))
+
+
+def test_build_fails_loud_on_sync_roots_json_with_wrong_json_type(tmp_path, monkeypatch):
+    # Arrange: valid JSON that is not an object must not silently unkey the index
+    monkeypatch.chdir(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.txt").write_text("alpha", encoding="utf-8")
+    recorded_builds: list[list[str]] = []
+    loaded_calls: list[set[str]] = []
+    cli = _wire_cli(monkeypatch, recorded_builds, loaded_calls)
+    asyncio.run(
+        cli.build_index(
+            cli.create_parser().parse_args(
+                _build_args("idx", [str(docs)], ["--sync-key", "corpus-v1"])
+            )
+        )
+    )
+    sync_roots = tmp_path / ".leann" / "indexes" / "idx" / "sync_roots.json"
+    sync_roots.write_text("[]", encoding="utf-8")
+
+    # Act / Assert
+    with pytest.raises(ValueError, match=r"sync_roots\.json"):
+        asyncio.run(
+            cli.build_index(cli.create_parser().parse_args(_build_args("idx", [str(docs)])))
+        )
+
+    # --force recovers
+    asyncio.run(
+        cli.build_index(
+            cli.create_parser().parse_args(_build_args("idx", [str(docs)], ["--force"]))
+        )
+    )
