@@ -4,6 +4,7 @@ import importlib
 import importlib.metadata
 import json
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union
 
@@ -58,6 +59,8 @@ def register_project_directory(project_dir: Optional[Union[str, Path]] = None):
     Args:
         project_dir: Directory to register. If None, uses current working directory.
     """
+    if os.environ.get("LEANN_NO_REGISTER") == "1":
+        return
     if project_dir is None:
         project_dir = Path.cwd()
     else:
