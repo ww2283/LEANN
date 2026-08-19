@@ -263,3 +263,72 @@ def test_load_snapshot_raises_snapshot_corrupt_error_on_corrupt_pickle(tmp_path)
     )
     missing.load_snapshot()
     assert missing.tree is None
+
+
+def test_unkeyed_build_fails_loud_on_corrupt_snapshot_and_force_resets(tmp_path, monkeypatch):
+    from leann.sync import SnapshotCorruptError
+
+    # Arrange: unkeyed build, then corrupt the per-root snapshot
+    monkeypatch.chdir(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.txt").write_text("alpha", encoding="utf-8")
+    recorded_builds: list[list[str]] = []
+    loaded_calls: list[set[str]] = []
+    cli = _wire_cli(monkeypatch, recorded_builds, loaded_calls)
+    asyncio.run(cli.build_index(cli.create_parser().parse_args(_build_args("idx", [str(docs)]))))
+    index_dir = tmp_path / ".leann" / "indexes" / "idx"
+    snapshots = list(index_dir.glob("sync_*.pickle"))
+    assert snapshots
+    for snap in snapshots:
+        snap.write_bytes(b"not a pickle")
+
+    # Act / Assert: without --force the corruption is a hard error
+    with pytest.raises(SnapshotCorruptError, match="--force"):
+        asyncio.run(
+            cli.build_index(cli.create_parser().parse_args(_build_args("idx", [str(docs)])))
+        )
+
+    # Act: --force resets the corrupt snapshot and rebuilds
+    asyncio.run(
+        cli.build_index(
+            cli.create_parser().parse_args(_build_args("idx", [str(docs)], ["--force"]))
+        )
+    )
+
+    # Assert: snapshot is valid again (a subsequent build sees no changes)
+    asyncio.run(cli.build_index(cli.create_parser().parse_args(_build_args("idx", [str(docs)]))))
+
+
+def test_build_fails_loud_on_corrupt_sync_roots_json(tmp_path, monkeypatch):
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.txt").write_text("alpha", encoding="utf-8")
+    recorded_builds: list[list[str]] = []
+    loaded_calls: list[set[str]] = []
+    cli = _wire_cli(monkeypatch, recorded_builds, loaded_calls)
+    asyncio.run(
+        cli.build_index(
+            cli.create_parser().parse_args(
+                _build_args("idx", [str(docs)], ["--sync-key", "corpus-v1"])
+            )
+        )
+    )
+    sync_roots = tmp_path / ".leann" / "indexes" / "idx" / "sync_roots.json"
+    sync_roots.write_text("{not json", encoding="utf-8")
+
+    # Act / Assert: an unreadable config must not silently unkey the index
+    with pytest.raises(ValueError, match=r"sync_roots\.json"):
+        asyncio.run(
+            cli.build_index(cli.create_parser().parse_args(_build_args("idx", [str(docs)])))
+        )
+
+    # Act: --force ignores the corrupt config and rewrites it
+    asyncio.run(
+        cli.build_index(
+            cli.create_parser().parse_args(_build_args("idx", [str(docs)], ["--force"]))
+        )
+    )
+    assert json.loads(sync_roots.read_text(encoding="utf-8"))

@@ -234,7 +234,16 @@ class FileSynchronizer:
             try:
                 file_hashes[file_path] = _hash_file_bytes(Path(file_path))
             except OSError:
-                logger.warning("Cannot hash file %s", file_path)
+                # Carry the old hash forward so a transiently unreadable file is
+                # not classified as removed (which would delete its chunks).
+                prev = (
+                    self.tree.root.children.get(file_path) if self.tree and self.tree.root else None
+                )
+                if prev is not None:
+                    logger.warning("Cannot hash file %s; keeping previous hash", file_path)
+                    file_hashes[file_path] = prev.data
+                else:
+                    logger.warning("Cannot hash new file %s; skipping", file_path)
         return file_hashes
 
     def build_merkle_tree(self, file_hashes):

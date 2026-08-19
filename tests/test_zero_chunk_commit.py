@@ -42,9 +42,7 @@ def _make_fake_builder():
                 encoding="utf-8",
             )
             (target_dir / "documents.leann.index").write_bytes(b"fake")
-            (target_dir / "documents.leann.passages.jsonl").write_text(
-                "", encoding="utf-8"
-            )
+            (target_dir / "documents.leann.passages.jsonl").write_text("", encoding="utf-8")
 
         def update_index(self, index_path):
             pass
@@ -135,7 +133,7 @@ def test_add_only_zero_chunk_delta_commits_snapshot_and_leaves_index_untouched(
     _run_build(cli, _build_args("idx", [str(docs)]))
     monkeypatch.setattr(cli, "load_documents", _loading_fake)
     capsys.readouterr()
-    rc = _run_changes(cli, ["changes", "idx", "--json"])
+    rc = _run_changes(cli, ["changes", "idx"])
     report = json.loads(capsys.readouterr().out)
 
     # Assert
@@ -169,7 +167,7 @@ def test_loader_failure_does_not_advance_snapshot(tmp_path, monkeypatch, capsys)
         _run_build(cli, _build_args("idx", [str(docs)]))
     monkeypatch.setattr(cli, "load_documents", _loading_fake)
     capsys.readouterr()
-    rc = _run_changes(cli, ["changes", "idx", "--json"])
+    rc = _run_changes(cli, ["changes", "idx"])
     report = json.loads(capsys.readouterr().out)
 
     # Assert
@@ -205,3 +203,33 @@ def test_snapshot_and_sync_config_writes_use_atomic_os_replace(tmp_path, monkeyp
         "_write_sync_config should publish sync_roots.json via os.replace"
     )
     assert not list(index_dir.glob("*.tmp"))
+
+
+def test_swallowed_loader_failure_blocks_snapshot_commit(tmp_path, monkeypatch, capsys):
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.txt").write_text("alpha", encoding="utf-8")
+    cli = _wire_cli(monkeypatch)
+    _run_build(cli, _build_args("idx", [str(docs)]))
+    new_file = docs / "b.txt"
+    new_file.write_text("beta", encoding="utf-8")
+
+    def swallowed_failure_load(docs_paths, custom_file_types=None, include_hidden=False, args=None):
+        cli._load_errors = 1  # simulate load_documents warn-and-continue on a broken file
+        return []
+
+    monkeypatch.setattr(cli, "load_documents", swallowed_failure_load)
+
+    # Act
+    with pytest.raises(RuntimeError, match="failed to load"):
+        _run_build(cli, _build_args("idx", [str(docs)]))
+    monkeypatch.setattr(cli, "load_documents", _loading_fake)
+    capsys.readouterr()
+    rc = _run_changes(cli, ["changes", "idx"])
+    report = json.loads(capsys.readouterr().out)
+
+    # Assert: snapshot not committed, so the failed file is still pending
+    assert rc == 0
+    assert report["added"] == [str(new_file.resolve())]

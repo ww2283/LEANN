@@ -135,9 +135,7 @@ def test_changes_reports_modified_and_added_as_single_sorted_json_doc(
     capsys.readouterr()
 
     # Act
-    rc = _run_changes(
-        cli, ["changes", "idx", "--docs", str(docs), "--sync-key", "corpus-v1", "--json"]
-    )
+    rc = _run_changes(cli, ["changes", "idx", "--docs", str(docs), "--sync-key", "corpus-v1"])
     out = capsys.readouterr().out
 
     # Assert
@@ -170,7 +168,7 @@ def test_changes_is_non_mutating_and_never_commits_snapshot(tmp_path, monkeypatc
     capsys.readouterr()
 
     # Act
-    argv = ["changes", "idx", "--docs", str(docs), "--sync-key", "corpus-v1", "--json"]
+    argv = ["changes", "idx", "--docs", str(docs), "--sync-key", "corpus-v1"]
     rc_first = _run_changes(cli, argv)
     out_first = capsys.readouterr().out
     rc_second = _run_changes(cli, argv)
@@ -197,7 +195,7 @@ def test_changes_without_docs_uses_stored_sync_roots_scope(tmp_path, monkeypatch
     capsys.readouterr()
 
     # Act
-    rc = _run_changes(cli, ["changes", "idx", "--json"])
+    rc = _run_changes(cli, ["changes", "idx"])
     report = json.loads(capsys.readouterr().out)
 
     # Assert
@@ -224,9 +222,7 @@ def test_changes_reports_empty_delta_immediately_after_build(tmp_path, monkeypat
     capsys.readouterr()
 
     # Act
-    rc = _run_changes(
-        cli, ["changes", "idx", "--docs", str(docs), "--sync-key", "corpus-v1", "--json"]
-    )
+    rc = _run_changes(cli, ["changes", "idx", "--docs", str(docs), "--sync-key", "corpus-v1"])
 
     # Assert
     assert rc == 0
@@ -255,9 +251,7 @@ def test_changes_with_corrupt_snapshot_exits_nonzero_without_false_clean_report(
     capsys.readouterr()
 
     # Act
-    rc = _run_changes(
-        cli, ["changes", "idx", "--docs", str(docs), "--sync-key", "corpus-v1", "--json"]
-    )
+    rc = _run_changes(cli, ["changes", "idx", "--docs", str(docs), "--sync-key", "corpus-v1"])
     out = capsys.readouterr().out
 
     # Assert
@@ -277,3 +271,61 @@ def test_cli_construction_does_not_create_indexes_dir_in_cwd(tmp_path, monkeypat
 
     # Assert
     assert not (fresh / ".leann" / "indexes").exists()
+
+
+def test_changes_on_missing_index_exits_nonzero(tmp_path, monkeypatch, capsys):
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    cli = _wire_cli(monkeypatch)
+
+    # Act
+    rc = _run_changes(cli, ["changes", "no-such-index"])
+    captured = capsys.readouterr()
+
+    # Assert
+    assert rc != 0
+    assert "not found" in captured.err
+    assert captured.out.strip() == ""
+
+
+def test_changes_with_wrong_sync_key_exits_nonzero(tmp_path, monkeypatch, capsys):
+    # Arrange
+    monkeypatch.chdir(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.txt").write_text("alpha", encoding="utf-8")
+    cli = _wire_cli(monkeypatch)
+    asyncio.run(
+        cli.build_index(
+            cli.create_parser().parse_args(
+                _build_args("idx", [str(docs)], ["--sync-key", "corpus-v1"])
+            )
+        )
+    )
+    capsys.readouterr()
+
+    # Act
+    rc = _run_changes(cli, ["changes", "idx", "--docs", str(docs), "--sync-key", "typo-key"])
+    captured = capsys.readouterr()
+
+    # Assert
+    assert rc != 0
+    assert "corpus-v1" in captured.err
+    assert captured.out.strip() == ""
+
+
+def test_changes_with_empty_scope_and_no_docs_exits_nonzero(tmp_path, monkeypatch, capsys):
+    # Arrange: index dir exists but has no sync_roots.json
+    monkeypatch.chdir(tmp_path)
+    index_dir = tmp_path / ".leann" / "indexes" / "idx"
+    index_dir.mkdir(parents=True)
+    cli = _wire_cli(monkeypatch)
+
+    # Act
+    rc = _run_changes(cli, ["changes", "idx"])
+    captured = capsys.readouterr()
+
+    # Assert
+    assert rc != 0
+    assert "sync scope" in captured.err
+    assert captured.out.strip() == ""

@@ -150,3 +150,43 @@ def test_verify_fails_when_id_map_has_id_missing_from_passages(tmp_path, monkeyp
 
     # Assert
     assert rc != 0
+
+
+def test_verify_reports_finding_instead_of_crashing_on_non_numeric_id_keys(
+    tmp_path, monkeypatch, capsys
+):
+    # Arrange: every id_to_passage key is non-numeric (the exact corruption verify flags)
+    prefix = _make_ivf_index(tmp_path, ["p0", "p1"])
+    id_map_path = prefix.parent / "documents.ivf_id_map.json"
+    id_map = json.loads(id_map_path.read_text(encoding="utf-8"))
+    id_map["id_to_passage"] = {"abc": "p0", "xyz": "p1"}
+    id_map["passage_to_id"] = {"p0": "abc", "p1": "xyz"}
+    id_map_path.write_text(json.dumps(id_map), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    rc = _run_verify()
+    out = capsys.readouterr().out
+
+    # Assert: findings printed, no ValueError traceback
+    assert rc == 1
+    assert "not an integer" in out
+
+
+def test_verify_unreadable_idx_does_not_emit_misleading_cross_findings(
+    tmp_path, monkeypatch, capsys
+):
+    # Arrange
+    prefix = _make_ivf_index(tmp_path, ["p0", "p1"])
+    Path(str(prefix) + ".passages.idx").write_bytes(b"not a pickle")
+    monkeypatch.chdir(tmp_path)
+
+    # Act
+    rc = _run_verify()
+    out = capsys.readouterr().out
+
+    # Assert: the unreadable idx is the finding; no derived mismatch noise
+    assert rc == 1
+    assert "passages.idx unreadable" in out
+    assert "do not match passages.idx" not in out
+    assert "passages.jsonl has" not in out

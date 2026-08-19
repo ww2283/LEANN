@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
+import leann.sync as sync_module
 from leann.sync import FileSynchronizer, MerkleTree, hash_data
 
 
@@ -153,3 +154,29 @@ class TestFileSynchronizer(unittest.TestCase):
             fs2 = FileSynchronizer(root_dir=str(docs), snapshot_path=snapshot)
             added, removed, modified = fs2.detect_changes()
             assert not added and not removed and not modified
+
+
+class TestUnreadableFileHandling(unittest.TestCase):
+    def test_unreadable_existing_file_keeps_previous_hash(self):
+        # A transiently unreadable file must not be classified as removed
+        # (which would delete its chunks from the index).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "file.txt"
+            file_path.write_text("hello", encoding="utf-8")
+            fs = FileSynchronizer(root_dir=temp_dir, auto_load=False)
+            fs.tree = fs.build_merkle_tree(fs.generate_file_hashes())
+
+            original = sync_module._hash_file_bytes
+
+            def broken_hash(path):
+                raise OSError("permission denied")
+
+            sync_module._hash_file_bytes = broken_hash
+            try:
+                added, removed, modified = fs.detect_changes()
+            finally:
+                sync_module._hash_file_bytes = original
+
+            assert removed == []
+            assert modified == []
+            assert added == []

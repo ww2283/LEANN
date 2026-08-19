@@ -204,6 +204,7 @@ class LeannCLI:
     def __init__(self):
         # Always use project-local .leann directory (like .git)
         self.indexes_dir = Path.cwd() / ".leann" / "indexes"
+        self._load_errors = 0
 
         # Default parser for documents
         self.node_parser = SentenceSplitter(
@@ -868,9 +869,6 @@ Examples:
             "--sync-key", type=str, default=None, help="Sync key (default: stored key)"
         )
         changes_parser.add_argument(
-            "--json", action="store_true", help="Emit JSON report on stdout"
-        )
-        changes_parser.add_argument(
             "--file-types", type=str, default=None, help="Comma-separated extensions filter"
         )
         changes_parser.add_argument(
@@ -1502,6 +1500,7 @@ Examples:
         include_hidden: bool = False,
         args: Optional[dict[str, Any]] = None,
     ):
+        self._load_errors = 0
         # Handle both single path (string) and multiple paths (list) for backward compatibility
         if isinstance(docs_paths, str):
             docs_paths = [docs_paths]
@@ -1521,6 +1520,7 @@ Examples:
                 directories.append(str(path_obj))
             else:
                 print(f"⚠️  Warning: Path '{path}' does not exist, skipping...")
+                self._load_errors += 1
                 continue
 
         # Print summary of what we're processing
@@ -1588,9 +1588,11 @@ Examples:
                         )
                     except Exception as e:
                         print(f"    ❌ Warning: Could not load files from {parent_dir}: {e}")
+                        self._load_errors += 1
 
             except Exception as e:
                 print(f"❌ Error processing individual files: {e}")
+                self._load_errors += 1
 
         # Define file extensions to process
         if custom_file_types:
@@ -1666,6 +1668,7 @@ Examples:
                             documents.extend(default_docs)
                         except Exception as e:
                             print(f"Warning: Could not process {file_path}: {e}")
+                            self._load_errors += 1
 
             # Load other file types with default reader
             # Exclude PDFs from code_extensions if they were already processed separately
@@ -1955,8 +1958,19 @@ Examples:
         include_hidden: bool = False,
         sync_key: Optional[str] = None,
         strict: bool = False,
+        reset_corrupt: bool = False,
     ) -> list[FileSynchronizer]:
         """Create FileSynchronizers with snapshots stored in the index dir. Shared by build and watch."""
+
+        def _init(**kw) -> FileSynchronizer:
+            try:
+                return FileSynchronizer(**kw)
+            except SnapshotCorruptError:
+                if not reset_corrupt:
+                    raise
+                Path(kw["snapshot_path"]).unlink(missing_ok=True)
+                return FileSynchronizer(**kw)
+
         if sync_key:
             manifest = list(explicit_files)
             for root in directories:
@@ -1964,7 +1978,7 @@ Examples:
             tag = hashlib.sha256(sync_key.encode()).hexdigest()[:12]
             # Keyed path fails loud (SnapshotCorruptError propagates) — no warn-and-skip.
             return [
-                FileSynchronizer(
+                _init(
                     explicit_files=sorted(set(manifest)),
                     include_extensions=include_extensions,
                     include_hidden=include_hidden,
@@ -1976,13 +1990,17 @@ Examples:
             tag = hashlib.sha256(root.encode()).hexdigest()[:12]
             snapshot_path = str(index_dir / f"sync_{tag}.pickle")
             try:
-                fs = FileSynchronizer(
+                fs = _init(
                     root_dir=root,
                     include_extensions=include_extensions,
                     include_hidden=include_hidden,
                     snapshot_path=snapshot_path,
                 )
                 synchronizers.append(fs)
+            except SnapshotCorruptError as exc:
+                raise SnapshotCorruptError(
+                    f"{exc}. Re-run with --force to reset the snapshot."
+                ) from exc
             except Exception as exc:
                 if strict:
                     raise
@@ -1991,13 +2009,17 @@ Examples:
             tag = hashlib.sha256("|".join(explicit_files).encode()).hexdigest()[:12]
             snapshot_path = str(index_dir / f"sync_files_{tag}.pickle")
             try:
-                fs = FileSynchronizer(
+                fs = _init(
                     explicit_files=explicit_files,
                     include_extensions=include_extensions,
                     include_hidden=include_hidden,
                     snapshot_path=snapshot_path,
                 )
                 synchronizers.append(fs)
+            except SnapshotCorruptError as exc:
+                raise SnapshotCorruptError(
+                    f"{exc}. Re-run with --force to reset the snapshot."
+                ) from exc
             except Exception as exc:
                 if strict:
                     raise
@@ -2011,12 +2033,19 @@ Examples:
         file_types: Optional[str] = None,
         include_hidden: bool = False,
         sync_key: Optional[str] = None,
+        reset_corrupt: bool = False,
     ) -> list[FileSynchronizer]:
         """Create FileSynchronizers for build from docs_paths."""
         directories, files = self._resolve_sync_scope(docs_paths)
         include_extensions = self._parse_file_types(file_types)
         return self._create_synchronizers(
-            index_dir, directories, files, include_extensions, include_hidden, sync_key=sync_key
+            index_dir,
+            directories,
+            files,
+            include_extensions,
+            include_hidden,
+            sync_key=sync_key,
+            reset_corrupt=reset_corrupt,
         )
 
     def _detect_build_changes(
@@ -2357,8 +2386,10 @@ Examples:
         try:
             with open(sync_config_path, encoding="utf-8") as f:
                 return json.load(f).get("sync_key")
-        except (json.JSONDecodeError, OSError):
-            return None
+        except (json.JSONDecodeError, OSError) as exc:
+            # Treating an unreadable config as "unkeyed" would silently bypass the
+            # sync-key mismatch guard and rekey the snapshot identity.
+            raise ValueError(f"sync_roots.json unreadable at {sync_config_path}: {exc}") from exc
 
     def _load_sync_roots(self, index_dir: Path) -> list[str]:
         """Load directory + explicit file paths for chunk ID lookup."""
@@ -2501,7 +2532,12 @@ Examples:
         )
 
         # Detect changes first so we can skip load_documents for remove-only
-        stored_key = self._load_stored_sync_key(index_dir)
+        try:
+            stored_key = self._load_stored_sync_key(index_dir)
+        except ValueError:
+            if not args.force:
+                raise
+            stored_key = None  # --force rewrites sync_roots.json anyway
         requested_key = getattr(args, "sync_key", None)
         if requested_key is None:
             args.sync_key = stored_key
@@ -2517,6 +2553,7 @@ Examples:
             file_types=args.file_types,
             include_hidden=args.include_hidden,
             sync_key=args.sync_key,
+            reset_corrupt=args.force,
         )
 
         all_texts: list[dict] | None = None
@@ -2606,9 +2643,17 @@ Examples:
                 )
                 # Proceed even when all_texts is empty (e.g. file emptied): we still need to remove old chunks
                 if not all_texts and not (modified_paths or removed_paths):
+                    if self._load_errors:
+                        # Committing here would record the failed files as indexed,
+                        # permanently masking the load failure.
+                        raise RuntimeError(
+                            f"No chunks produced and {self._load_errors} path(s) failed to "
+                            f"load; snapshot not committed. Fix the inputs and re-run."
+                        )
                     print("No documents found")
                     self._commit_synchronizers(synchronizers)
                     self._write_sync_config_for_docs(index_dir, docs_paths, args, build_config)
+                    self.register_project_dir()
                     return
 
                 if can_ivf_update and (new_paths or modified_paths or removed_paths):
@@ -2742,10 +2787,32 @@ Examples:
             include_extensions = self._parse_file_types(args.file_types)
             include_hidden = args.include_hidden
         else:
+            if not index_dir.exists():
+                print(f"Error: index '{args.index_name}' not found at {index_dir}", file=sys.stderr)
+                return 1
             directories, files, include_extensions, include_hidden = self._load_sync_scope(
                 index_dir
             )
-        sync_key = args.sync_key or self._load_stored_sync_key(index_dir)
+            if not directories and not files:
+                print(
+                    f"Error: no sync scope recorded for index '{args.index_name}' "
+                    f"(missing or unreadable sync_roots.json); pass --docs",
+                    file=sys.stderr,
+                )
+                return 1
+        try:
+            stored_key = self._load_stored_sync_key(index_dir)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        if args.sync_key and stored_key and args.sync_key != stored_key:
+            print(
+                f"Error: index '{args.index_name}' is keyed with sync key "
+                f"'{stored_key}'; got '{args.sync_key}'.",
+                file=sys.stderr,
+            )
+            return 1
+        sync_key = args.sync_key or stored_key
         try:
             synchronizers = self._create_synchronizers(
                 index_dir,
@@ -2799,13 +2866,15 @@ Examples:
             findings.append("passages.jsonl contains duplicate ids")
 
         offsets: dict[str, int] = {}
+        offsets_ok = False
         try:
             with open(str(prefix) + ".passages.idx", "rb") as f:
                 offsets = pickle.load(f)
+            offsets_ok = True
         except Exception as exc:
             findings.append(f"passages.idx unreadable: {exc}")
 
-        if offsets or jsonl_ids:
+        if offsets_ok and (offsets or jsonl_ids):
             if len(offsets) != len(jsonl_ids):
                 findings.append(
                     f"passages.idx has {len(offsets)} entries but "
@@ -2827,13 +2896,13 @@ Examples:
                             findings.append(f"offset for id {pid!r} invalid: {exc}")
 
         if meta and meta.get("backend_name") == "ivf":
-            findings.extend(self._verify_ivf(prefix, offsets))
+            findings.extend(self._verify_ivf(prefix, offsets if offsets_ok else None))
 
         for finding in findings:
             print(finding)
         return 1 if findings else 0
 
-    def _verify_ivf(self, prefix: Path, offsets: dict[str, int]) -> list[str]:
+    def _verify_ivf(self, prefix: Path, offsets: Optional[dict[str, int]]) -> list[str]:
         findings: list[str] = []
         # The IVF backend writes its artifacts against the stem without ".leann"
         # (documents.ivf_id_map.json / documents.index), unlike the passage files.
@@ -2857,10 +2926,11 @@ Examples:
         for key, pid in id_to_passage.items():
             if str(passage_to_id.get(pid)) != key:
                 findings.append(f"id_to_passage[{key!r}]={pid!r} is not inverted in passage_to_id")
-        if set(id_to_passage.values()) != set(offsets):
+        if offsets is not None and set(id_to_passage.values()) != set(offsets):
             findings.append("id_to_passage values do not match passages.idx keys")
-        if id_to_passage:
-            max_id = max(int(k) for k in id_to_passage if k.lstrip("-").isdigit())
+        numeric_ids = [int(k) for k in id_to_passage if k.lstrip("-").isdigit()]
+        if numeric_ids:
+            max_id = max(numeric_ids)
             if next_id <= max_id:
                 findings.append(f"next_id {next_id} is not greater than max id {max_id}")
 
