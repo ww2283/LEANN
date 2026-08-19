@@ -877,6 +877,11 @@ Examples:
             "--include-hidden", action="store_true", help="Include hidden files"
         )
 
+        verify_parser = subparsers.add_parser(
+            "verify", help="Verify cross-artifact integrity of an index"
+        )
+        verify_parser.add_argument("index_name", help="Index name")
+
         # Serve command (HTTP API server)
         serve_parser = subparsers.add_parser(
             "serve", help="Start HTTP API server for LEANN vector DB"
@@ -2762,6 +2767,114 @@ Examples:
         )
         return 0
 
+    def verify_command(self, args) -> int:
+        """Verify cross-artifact integrity of an index; print findings, return 0 if healthy."""
+        prefix = self.indexes_dir / args.index_name / "documents.leann"
+        findings: list[str] = []
+
+        meta = None
+        try:
+            meta = json.loads(prefix.with_suffix(".meta.json").read_text(encoding="utf-8"))
+        except Exception as exc:
+            findings.append(f"meta.json unreadable: {exc}")
+
+        jsonl_path = Path(str(prefix) + ".passages.jsonl")
+        jsonl_ids: list[str] = []
+        try:
+            with open(jsonl_path, encoding="utf-8") as f:
+                for lineno, line in enumerate(f, 1):
+                    try:
+                        pid = json.loads(line)["id"]
+                    except Exception as exc:
+                        findings.append(f"passages.jsonl line {lineno} unparseable: {exc}")
+                        continue
+                    jsonl_ids.append(pid)
+        except Exception as exc:
+            findings.append(f"passages.jsonl unreadable: {exc}")
+        if len(set(jsonl_ids)) != len(jsonl_ids):
+            findings.append("passages.jsonl contains duplicate ids")
+
+        offsets: dict[str, int] = {}
+        try:
+            with open(str(prefix) + ".passages.idx", "rb") as f:
+                offsets = pickle.load(f)
+        except Exception as exc:
+            findings.append(f"passages.idx unreadable: {exc}")
+
+        if offsets or jsonl_ids:
+            if len(offsets) != len(jsonl_ids):
+                findings.append(
+                    f"passages.idx has {len(offsets)} entries but "
+                    f"passages.jsonl has {len(jsonl_ids)} lines"
+                )
+            if set(offsets) != set(jsonl_ids):
+                findings.append("passages.idx keys do not match passages.jsonl ids")
+            if jsonl_path.exists():
+                with open(jsonl_path, "rb") as f:
+                    for pid, offset in offsets.items():
+                        try:
+                            f.seek(offset)
+                            record = json.loads(f.readline().decode("utf-8"))
+                            if record["id"] != pid:
+                                findings.append(
+                                    f"offset for id {pid!r} points at id {record['id']!r}"
+                                )
+                        except Exception as exc:
+                            findings.append(f"offset for id {pid!r} invalid: {exc}")
+
+        if meta and meta.get("backend_name") == "ivf":
+            findings.extend(self._verify_ivf(prefix, offsets))
+
+        for finding in findings:
+            print(finding)
+        return 1 if findings else 0
+
+    def _verify_ivf(self, prefix: Path, offsets: dict[str, int]) -> list[str]:
+        findings: list[str] = []
+        try:
+            id_map = json.loads(Path(str(prefix) + ".ivf_id_map.json").read_text(encoding="utf-8"))
+            id_to_passage = id_map["id_to_passage"]
+            passage_to_id = id_map["passage_to_id"]
+            next_id = id_map["next_id"]
+        except Exception as exc:
+            return [f"ivf_id_map.json unreadable: {exc}"]
+
+        for key in id_to_passage:
+            try:
+                if int(key) < 0:
+                    findings.append(f"id_to_passage key {key!r} is negative")
+            except ValueError:
+                findings.append(f"id_to_passage key {key!r} is not an integer")
+        if len(id_to_passage) != len(passage_to_id):
+            findings.append("id_to_passage and passage_to_id have different sizes")
+        for key, pid in id_to_passage.items():
+            if str(passage_to_id.get(pid)) != key:
+                findings.append(f"id_to_passage[{key!r}]={pid!r} is not inverted in passage_to_id")
+        if set(id_to_passage.values()) != set(offsets):
+            findings.append("id_to_passage values do not match passages.idx keys")
+        if id_to_passage:
+            max_id = max(int(k) for k in id_to_passage if k.lstrip("-").isdigit())
+            if next_id <= max_id:
+                findings.append(f"next_id {next_id} is not greater than max id {max_id}")
+
+        index_path = Path(str(prefix) + ".index")
+        if not index_path.exists():
+            findings.append("missing .index file for ivf index")
+            return findings
+        try:
+            try:
+                import faiss
+            except ImportError:
+                from leann_backend_hnsw import faiss
+            index = faiss.read_index(str(index_path))
+            if index.ntotal != len(id_to_passage):
+                findings.append(
+                    f".index has {index.ntotal} vectors but id map has {len(id_to_passage)}"
+                )
+        except Exception as exc:
+            findings.append(f".index unreadable: {exc}")
+        return findings
+
     def _watch_report_changes(
         self,
         index_name: str,
@@ -3825,6 +3938,10 @@ Examples:
                 await self.build_index(args)
         elif args.command == "changes":
             rc = self.changes_command(args)
+            if rc:
+                sys.exit(rc)
+        elif args.command == "verify":
+            rc = self.verify_command(args)
             if rc:
                 sys.exit(rc)
         elif args.command == "watch":
