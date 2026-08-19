@@ -27,7 +27,7 @@ def _make_ivf_index(tmp_path: Path, passage_ids: list[str]) -> Path:
     index_dir.mkdir(parents=True)
     prefix = index_dir / "documents.leann"
 
-    prefix.with_suffix(".meta.json").write_text(
+    Path(str(prefix) + ".meta.json").write_text(
         json.dumps(
             {
                 "backend_name": "ivf",
@@ -54,9 +54,13 @@ def _make_ivf_index(tmp_path: Path, passage_ids: list[str]) -> Path:
         "passage_to_id": {pid: i for i, pid in enumerate(passage_ids)},
         "next_id": len(passage_ids),
     }
-    Path(str(prefix) + ".ivf_id_map.json").write_text(json.dumps(id_map), encoding="utf-8")
+    Path(str(prefix).removesuffix(".leann") + ".ivf_id_map.json").write_text(
+        json.dumps(id_map), encoding="utf-8"
+    )
 
-    _write_faiss_index(Path(str(prefix) + ".index"), num_vectors=len(passage_ids))
+    _write_faiss_index(
+        Path(str(prefix).removesuffix(".leann") + ".index"), num_vectors=len(passage_ids)
+    )
     return prefix
 
 
@@ -99,7 +103,7 @@ def test_verify_fails_when_id_map_not_exact_inverse(tmp_path, monkeypatch):
     # Arrange
     monkeypatch.chdir(tmp_path)
     prefix = _make_ivf_index(tmp_path, ["0", "1", "2"])
-    id_map_path = Path(str(prefix) + ".ivf_id_map.json")
+    id_map_path = Path(str(prefix).removesuffix(".leann") + ".ivf_id_map.json")
     id_map = json.loads(id_map_path.read_text(encoding="utf-8"))
     id_map["passage_to_id"]["2"] = 0
     id_map_path.write_text(json.dumps(id_map), encoding="utf-8")
@@ -133,13 +137,13 @@ def test_verify_fails_when_id_map_has_id_missing_from_passages(tmp_path, monkeyp
     # Arrange
     monkeypatch.chdir(tmp_path)
     prefix = _make_ivf_index(tmp_path, ["0", "1", "2"])
-    id_map_path = Path(str(prefix) + ".ivf_id_map.json")
+    id_map_path = Path(str(prefix).removesuffix(".leann") + ".ivf_id_map.json")
     id_map = json.loads(id_map_path.read_text(encoding="utf-8"))
     id_map["id_to_passage"]["3"] = "orphan"
     id_map["passage_to_id"]["orphan"] = 3
     id_map["next_id"] = 4
     id_map_path.write_text(json.dumps(id_map), encoding="utf-8")
-    _write_faiss_index(Path(str(prefix) + ".index"), num_vectors=4)
+    _write_faiss_index(Path(str(prefix).removesuffix(".leann") + ".index"), num_vectors=4)
 
     # Act
     rc = _run_verify()

@@ -2778,7 +2778,7 @@ Examples:
 
         meta = None
         try:
-            meta = json.loads(prefix.with_suffix(".meta.json").read_text(encoding="utf-8"))
+            meta = json.loads(Path(str(prefix) + ".meta.json").read_text(encoding="utf-8"))
         except Exception as exc:
             findings.append(f"meta.json unreadable: {exc}")
 
@@ -2835,8 +2835,11 @@ Examples:
 
     def _verify_ivf(self, prefix: Path, offsets: dict[str, int]) -> list[str]:
         findings: list[str] = []
+        # The IVF backend writes its artifacts against the stem without ".leann"
+        # (documents.ivf_id_map.json / documents.index), unlike the passage files.
+        stem = prefix.parent / prefix.name.removesuffix(".leann")
         try:
-            id_map = json.loads(Path(str(prefix) + ".ivf_id_map.json").read_text(encoding="utf-8"))
+            id_map = json.loads(Path(str(stem) + ".ivf_id_map.json").read_text(encoding="utf-8"))
             id_to_passage = id_map["id_to_passage"]
             passage_to_id = id_map["passage_to_id"]
             next_id = id_map["next_id"]
@@ -2861,7 +2864,7 @@ Examples:
             if next_id <= max_id:
                 findings.append(f"next_id {next_id} is not greater than max id {max_id}")
 
-        index_path = Path(str(prefix) + ".index")
+        index_path = Path(str(stem) + ".index")
         if not index_path.exists():
             findings.append("missing .index file for ivf index")
             return findings
