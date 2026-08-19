@@ -31,6 +31,7 @@ from .settings import (
 from .sync import (
     DEFAULT_INDEX_EXTENSIONS,
     FileSynchronizer,
+    SnapshotCorruptError,
     _iter_directory_files,
     parse_include_extensions,
 )
@@ -203,7 +204,6 @@ class LeannCLI:
     def __init__(self):
         # Always use project-local .leann directory (like .git)
         self.indexes_dir = Path.cwd() / ".leann" / "indexes"
-        self.indexes_dir.mkdir(parents=True, exist_ok=True)
 
         # Default parser for documents
         self.node_parser = SentenceSplitter(
@@ -850,6 +850,31 @@ Examples:
         remove_parser.add_argument("index_name", help="Index name to remove")
         remove_parser.add_argument(
             "--force", "-f", action="store_true", help="Force removal without confirmation"
+        )
+
+        # Changes command (non-mutating diff vs stored snapshot)
+        changes_parser = subparsers.add_parser(
+            "changes", help="Show pending file changes vs the stored index snapshot"
+        )
+        changes_parser.add_argument("index_name", help="Index name")
+        changes_parser.add_argument(
+            "--docs",
+            type=str,
+            nargs="+",
+            default=None,
+            help="Scope to diff (default: stored sync_roots.json scope)",
+        )
+        changes_parser.add_argument(
+            "--sync-key", type=str, default=None, help="Sync key (default: stored key)"
+        )
+        changes_parser.add_argument(
+            "--json", action="store_true", help="Emit JSON report on stdout"
+        )
+        changes_parser.add_argument(
+            "--file-types", type=str, default=None, help="Comma-separated extensions filter"
+        )
+        changes_parser.add_argument(
+            "--include-hidden", action="store_true", help="Include hidden files"
         )
 
         # Serve command (HTTP API server)
@@ -1924,6 +1949,7 @@ Examples:
         include_extensions: list[str],
         include_hidden: bool = False,
         sync_key: Optional[str] = None,
+        strict: bool = False,
     ) -> list[FileSynchronizer]:
         """Create FileSynchronizers with snapshots stored in the index dir. Shared by build and watch."""
         if sync_key:
@@ -1953,6 +1979,8 @@ Examples:
                 )
                 synchronizers.append(fs)
             except Exception as exc:
+                if strict:
+                    raise
                 print(f"Warning: Failed to init synchronizer for {root}: {exc}")
         if explicit_files:
             tag = hashlib.sha256("|".join(explicit_files).encode()).hexdigest()[:12]
@@ -1966,6 +1994,8 @@ Examples:
                 )
                 synchronizers.append(fs)
             except Exception as exc:
+                if strict:
+                    raise
                 print(f"Warning: Failed to init synchronizer for explicit files: {exc}")
         return synchronizers
 
@@ -2694,6 +2724,43 @@ Examples:
             sync_key=self._load_stored_sync_key(index_dir),
         )
         return self._detect_build_changes(synchronizers)
+
+    def changes_command(self, args) -> int:
+        """Report pending file changes vs the stored snapshot without mutating anything."""
+        index_dir = self.indexes_dir / args.index_name
+        if args.docs:
+            directories, files = self._resolve_sync_scope(args.docs)
+            include_extensions = self._parse_file_types(args.file_types)
+            include_hidden = args.include_hidden
+        else:
+            directories, files, include_extensions, include_hidden = self._load_sync_scope(
+                index_dir
+            )
+        sync_key = args.sync_key or self._load_stored_sync_key(index_dir)
+        try:
+            synchronizers = self._create_synchronizers(
+                index_dir,
+                directories,
+                files,
+                include_extensions,
+                include_hidden,
+                sync_key=sync_key,
+                strict=True,
+            )
+            added, removed, modified = self._detect_build_changes(synchronizers)
+        except SnapshotCorruptError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        print(
+            json.dumps(
+                {
+                    "added": sorted(added),
+                    "modified": sorted(modified),
+                    "removed": sorted(removed),
+                }
+            )
+        )
+        return 0
 
     def _watch_report_changes(
         self,
@@ -3756,6 +3823,10 @@ Examples:
         elif args.command == "build":
             with suppress_cpp_output(suppress):
                 await self.build_index(args)
+        elif args.command == "changes":
+            rc = self.changes_command(args)
+            if rc:
+                sys.exit(rc)
         elif args.command == "watch":
             await self.watch_index(args)
         elif args.command == "migrate-ids":
