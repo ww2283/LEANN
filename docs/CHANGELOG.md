@@ -72,3 +72,15 @@ fixes). Newest entries at the bottom.
   the deduped `id_to_passage` value set).
 - Same id with different text, broken inversion, or a missing `passage_to_id` entry still
   fail verify; tests now include a duplicate-content fixture.
+
+## 2026-08-19: incremental add gave all chunks of a file one passage id (issue #7)
+
+- Chunkers can return chunks for one file that alias a single shared metadata dict; both
+  id assigners in `cli.py` (`_assign_chunk_ids`, `_assign_unique_chunk_ids`) wrote each
+  per-chunk id into that shared dict, so the last chunk's id overwrote all previous ones
+  and `LeannBuilder.add_text` (which resolves the passage id from `metadata["id"]`) gave
+  every chunk of a multi-chunk file the same id — corrupting `passages.idx` and the FAISS
+  id map, and failing `leann verify` on every multi-file incremental build.
+- Fixed by copying the metadata dict at assignment time
+  (`c["metadata"] = {**c.get("metadata", {}), "id": sid}`); regression tests cover both
+  assigners with a shared-dict fixture.
