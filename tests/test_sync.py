@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from unittest.mock import Mock
 
 import leann.sync as sync_module
@@ -166,16 +167,11 @@ class TestUnreadableFileHandling(unittest.TestCase):
             fs = FileSynchronizer(root_dir=temp_dir, auto_load=False)
             fs.tree = fs.build_merkle_tree(fs.generate_file_hashes())
 
-            original = sync_module._hash_file_bytes
-
-            def broken_hash(path):
+            def broken_hash(path: Path) -> str:
                 raise OSError("permission denied")
 
-            sync_module._hash_file_bytes = broken_hash
-            try:
+            with mock.patch.object(sync_module, "_hash_file_bytes", broken_hash):
                 added, removed, modified = fs.detect_changes()
-            finally:
-                sync_module._hash_file_bytes = original
 
             assert removed == []
             assert modified == []

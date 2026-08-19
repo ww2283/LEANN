@@ -1,7 +1,6 @@
 import json
 
 import pytest
-
 from leann.registry import register_project_directory
 
 
