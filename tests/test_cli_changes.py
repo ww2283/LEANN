@@ -346,3 +346,22 @@ def test_changes_on_missing_index_with_docs_exits_nonzero(tmp_path, monkeypatch,
     # Assert
     assert rc != 0
     assert "not found" in captured.err
+
+
+def test_changes_with_key_on_unkeyed_index_exits_nonzero(tmp_path, monkeypatch, capsys):
+    # Arrange: index built WITHOUT a sync key
+    monkeypatch.chdir(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.txt").write_text("alpha", encoding="utf-8")
+    cli = _wire_cli(monkeypatch)
+    asyncio.run(cli.build_index(cli.create_parser().parse_args(_build_args("idx", [str(docs)]))))
+    capsys.readouterr()
+
+    # Act: a key against the unkeyed index would diff a never-written snapshot
+    rc = _run_changes(cli, ["changes", "idx", "--docs", str(docs), "--sync-key", "typo"])
+    captured = capsys.readouterr()
+
+    # Assert
+    assert rc != 0
+    assert captured.out.strip() == ""

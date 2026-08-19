@@ -2774,15 +2774,21 @@ Examples:
         if not directories and not files:
             return set(), set(), set()
 
-        synchronizers = self._create_synchronizers(
-            index_dir,
-            directories,
-            files,
-            include_extensions,
-            include_hidden,
-            sync_key=self._load_stored_sync_key(index_dir),
-        )
-        return self._detect_build_changes(synchronizers)
+        # Watch must survive transient failures (corrupt config/snapshot, unreadable
+        # subtree) that build/changes fail loud on: skip the tick, keep watching.
+        try:
+            synchronizers = self._create_synchronizers(
+                index_dir,
+                directories,
+                files,
+                include_extensions,
+                include_hidden,
+                sync_key=self._load_stored_sync_key(index_dir),
+            )
+            return self._detect_build_changes(synchronizers)
+        except (ValueError, SnapshotCorruptError, OSError) as exc:
+            print(f"Warning: watch tick skipped: {exc}")
+            return set(), set(), set()
 
     def changes_command(self, args) -> int:
         """Report pending file changes vs the stored snapshot without mutating anything."""
@@ -2810,7 +2816,9 @@ Examples:
         except ValueError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
-        if args.sync_key and stored_key and args.sync_key != stored_key:
+        if args.sync_key and args.sync_key != stored_key:
+            # stored_key None included: a key against an unkeyed index would diff
+            # a never-written snapshot and report every file as added.
             print(
                 f"Error: index '{args.index_name}' is keyed with sync key "
                 f"'{stored_key}'; got '{args.sync_key}'.",
